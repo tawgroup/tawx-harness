@@ -1,7 +1,7 @@
 // Interactive terminal UI (readline + ANSI). Chat-style, with tool rendering + approval.
 import readline from "node:readline";
 import { createAgent } from "./agent.mjs";
-import { c, banner } from "./ui.mjs";
+import { c, banner, renderMarkdown } from "./ui.mjs";
 import { GO_MODELS, DEFAULT_MODEL } from "./config.mjs";
 
 const HELP = `
@@ -37,7 +37,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
           break;
         }
         case "assistant":
-          process.stdout.write(c.bold("⏺ ") + ev.text.trim() + "\n");
+          process.stdout.write(c.bold("⏺ ") + renderMarkdown(ev.text.trim()) + "\n");
           break;
         case "tool_call":
           process.stdout.write(c.green("  ⚒ ") + c.bold(ev.name) + c.dim("  " + String(ev.preview).split("\n")[0].slice(0, 80)) + "\n");
