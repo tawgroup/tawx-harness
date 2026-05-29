@@ -1,25 +1,25 @@
 # AGENTS.md — taw-harness
 
-Repo này là một coding-agent harness viết tay (zero-dep), chạy bằng OpenCode Go.
+This repo is a hand-written (zero-dep) coding-agent harness running on OpenCode Go.
 
-## Nguyên tắc khi sửa repo
-- **Không thêm dependency** trừ khi bắt buộc. Ưu tiên built-in Node.
-- File `.mjs` ESM, chạy thẳng (không build step). Phải chạy được cả `node` và `bun`.
-- Tool mới: thêm vào `src/tools.mjs` theo đúng shape `{schema, needsApproval, preview, run}`.
-- Thao tác phá hoại (write/edit/bash) phải có `needsApproval: true`.
-- Chuỗi hiển thị cho người dùng: tiếng Việt.
+## Rules when editing this repo
+- **No dependencies** unless absolutely required. Prefer Node built-ins.
+- `.mjs` ESM files, run directly (no build step). Must work on both `node` and `bun`.
+- New tool: add it to `src/tools.mjs` following the `{schema, needsApproval, preview, run}` shape.
+- Destructive actions (write/edit/bash) must set `needsApproval: true`.
+- User-facing strings: English.
 
 ## Test
-- `npm test` — offline checks luôn phải xanh.
-- Có `OPENCODE_API_KEY` thì test live end-to-end.
+- `npm test` — the offline checks must always be green.
+- With `OPENCODE_API_KEY` set, it also runs the live end-to-end test.
 
-## Endpoint (đã verify)
-- Base: `https://opencode.ai/zen/go/v1` (KHÔNG phải `zen/v1` — cái đó trừ balance, báo CreditsError).
-- Auth: header `authorization: Bearer <key gói Go>`.
-- OpenAI-compatible `/chat/completions`, có thể trả thêm `reasoning_content` (bỏ qua được).
+## Endpoint (verified)
+- Base: `https://opencode.ai/zen/go/v1` (NOT `zen/v1` — that one debits balance and returns CreditsError).
+- Auth: header `authorization: Bearer <Go plan key>`.
+- OpenAI-compatible `/chat/completions`; may return extra `reasoning_content` (safe to ignore).
 
-## Chọn model (verify 2026-05-29)
-- Default `glm-5`: ĐÁNG TIN cho vòng lặp agent — multi-turn tool chạy trọn (write→read→summary OK).
-- `kimi-k2.5`: nhanh + non-reasoning, gen output thẳng. NHƯNG **hỏng multi-turn**: chạy được 1-2 tool call rồi call kế tiếp báo "Provider returned error". Chỉ dùng gen 1-phát (max-steps thấp). KHÔNG làm default.
-- glm-5 / deepseek-v4-pro / minimax-m2.5: reasoning-heavy → đốt nhiều `reasoning_tokens`, set `TAW_MAX_TOKENS` cao khi gen file lớn.
-- Throughput Go biến động 17–47 tok/s; có request-timeout (`TAW_REQUEST_TIMEOUT`). Nhồi content >15k ký tự vào 1 tool-call `arguments` dễ bị provider error → v2 nên ghi file lớn theo chunk.
+## Model notes (verified 2026-05-29)
+- Default `glm-5`: RELIABLE for the agent loop — multi-turn tool use completes (write→read→summary OK).
+- `kimi-k2.5`: fast + non-reasoning, generates output directly. BUT **breaks on multi-turn**: works for 1-2 tool calls then the next returns "Provider returned error". Only use for one-shot gen (low max-steps). Not a good default.
+- glm-5 / deepseek-v4-pro / minimax-m2.5: reasoning-heavy → burn lots of `reasoning_tokens`, set a higher `TAW_MAX_TOKENS` for large files.
+- Go throughput varies 17–47 tok/s; there is a request-timeout (`TAW_REQUEST_TIMEOUT`). Stuffing >15k chars into one tool-call `arguments` can trigger provider errors → prefer splitting large files across steps.

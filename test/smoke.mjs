@@ -46,12 +46,12 @@ assert.ok(skillsIndex(skills).includes("git-commit"));
 ok(`loaded ${skills.size} skills`);
 
 if (!API_KEY) {
-  console.log("\nLIVE test: BỎ QUA (chưa set OPENCODE_API_KEY)");
+  console.log("\nLIVE test: SKIPPED (OPENCODE_API_KEY not set)");
   console.log(`\n${pass} offline checks passed ✓`);
   process.exit(0);
 }
 
-console.log("\nLIVE end-to-end (gọi gói Go thật):");
+console.log("\nLIVE end-to-end (real call to the Go plan):");
 const liveDir = fs.mkdtempSync(path.join(os.tmpdir(), "taw-live-"));
 const agent = createAgent({
   cwd: liveDir,
@@ -64,15 +64,15 @@ const agent = createAgent({
 });
 
 await agent.send(
-  'Tạo file hello.mjs in ra dòng "TAW OK", rồi chạy nó bằng node để chứng minh hoạt động.',
+  'Create a file hello.mjs that prints the line "TAW OK", then run it with node to prove it works.',
 );
 
 const made = fs.existsSync(path.join(liveDir, "hello.mjs"));
-assert.ok(made, "agent phải tạo được hello.mjs");
-ok("agent tạo file qua tool");
+assert.ok(made, "agent should create hello.mjs");
+ok("agent created a file via tool");
 const content = fs.readFileSync(path.join(liveDir, "hello.mjs"), "utf8");
-assert.ok(/TAW OK/.test(content), "file phải chứa TAW OK");
-ok("nội dung file đúng");
+assert.ok(/TAW OK/.test(content), "file should contain TAW OK");
+ok("file content is correct");
 
-console.log(`\n${pass} checks passed ✓ — harness hoạt động end-to-end với gói Go.`);
+console.log(`\n${pass} checks passed ✓ — harness works end-to-end on the Go plan.`);
 process.exit(0);

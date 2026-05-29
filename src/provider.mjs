@@ -39,7 +39,7 @@ export async function chat({ messages, tools, model, maxTokens = MAX_TOKENS, sig
     } catch (e) {
       // caller aborted -> propagate; our own timeout -> retry
       if (signal?.aborted) throw e;
-      lastErr = new Error(`request lỗi/timeout (>${REQUEST_TIMEOUT_MS}ms): ${e.message}`);
+      lastErr = new Error(`request error/timeout (>${REQUEST_TIMEOUT_MS}ms): ${e.message}`);
       await SLEEP(500 * (attempt + 1));
       continue;
     } finally {
@@ -61,13 +61,13 @@ export async function chat({ messages, tools, model, maxTokens = MAX_TOKENS, sig
       const err = json.error || json;
       const type = err.type || "Error";
       const msg = err.message || JSON.stringify(err);
-      // fatal: vô nghĩa nếu retry (hết tiền, sai model, sai key)
+      // fatal: pointless to retry (out of credits, wrong model, wrong key)
       const fatal =
         res.status === 401 ||
         res.status === 403 ||
         /CreditsError|ModelError|Insufficient|unauthor|invalid api key/i.test(`${type} ${msg}`);
       if (fatal) throw new Error(`${type}: ${msg}`);
-      // tạm thời (kể cả "Provider returned error" upstream) -> retry
+      // transient (incl. upstream "Provider returned error") -> retry
       lastErr = new Error(`${type}: ${msg}`);
       await SLEEP(800 * (attempt + 1));
       continue;
