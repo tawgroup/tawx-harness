@@ -1,7 +1,7 @@
-// Interactive terminal UI (readline + ANSI). Chat-style, with tool rendering + approval.
+// Interactive terminal UI (readline + ANSI). Chat-style, with streaming, tool rendering + approval.
 import readline from "node:readline";
 import { createAgent } from "./agent.mjs";
-import { c, banner, renderMarkdown } from "./ui.mjs";
+import { c, banner, renderMarkdown, createMdStream } from "./ui.mjs";
 import { GO_MODELS, DEFAULT_MODEL } from "./config.mjs";
 
 const HELP = `
@@ -22,24 +22,39 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
 
   let autoApprove = false;
   let spin = null;
+  let activeSkill = null;   // last skill loaded via load_skill
+  let turnStart = 0;        // wall-clock of the current model turn
+  let mdStream = null;      // streaming markdown renderer for the current assistant message
   const stopSpin = () => {
     if (spin) { clearInterval(spin); spin = null; process.stdout.write("\r\x1b[2K"); }
   };
 
   const agent = createAgent({
     model,
+    stream: true,
     onEvent(ev) {
       if (ev.type !== "thinking") stopSpin();
       switch (ev.type) {
         case "thinking": {
+          turnStart = Date.now();
           const fr = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]; let i = 0;
-          spin = setInterval(() => process.stdout.write("\r" + c.magenta(fr[i++ % fr.length]) + c.dim(` ${ev.model} thinking…  `)), 80);
+          const tag = activeSkill ? c.dim(` · skill:${activeSkill}`) : "";
+          spin = setInterval(() => process.stdout.write("\r" + c.magenta(fr[i++ % fr.length]) + c.dim(` ${ev.model} thinking…`) + tag + "  "), 80);
           break;
         }
+        case "assistant_delta":
+          if (!mdStream) {
+            process.stdout.write(c.bold("⏺ "));
+            mdStream = createMdStream((s) => process.stdout.write(s));
+          }
+          mdStream.push(ev.text);
+          break;
         case "assistant":
-          process.stdout.write(c.bold("⏺ ") + renderMarkdown(ev.text.trim()) + "\n");
+          if (mdStream) { mdStream.end(); mdStream = null; }
+          else process.stdout.write(c.bold("⏺ ") + renderMarkdown(ev.text.trim()) + "\n");
           break;
         case "tool_call":
+          if (ev.name === "load_skill") activeSkill = String(ev.preview).trim();
           process.stdout.write(c.green("  ⚒ ") + c.bold(ev.name) + c.dim("  " + String(ev.preview).split("\n")[0].slice(0, 80)) + "\n");
           break;
         case "tool_result": {
@@ -52,8 +67,10 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
           process.stdout.write(c.red("    ✗ denied\n"));
           break;
         case "usage":
-          if (ev.usage?.total_tokens)
-            process.stdout.write(c.gray(`    · ${ev.usage.total_tokens} tok` + (ev.cost != null ? `, cost ${ev.cost}` : "")) + "\n");
+          if (ev.usage?.total_tokens) {
+            const secs = turnStart ? `, ${((Date.now() - turnStart) / 1000).toFixed(1)}s` : "";
+            process.stdout.write(c.gray(`    · ${ev.usage.total_tokens} tok` + (ev.cost != null ? `, cost ${ev.cost}` : "") + secs) + "\n");
+          }
           break;
         case "max_steps":
           process.stdout.write(c.yellow("  ⚠ reached step limit\n"));
@@ -85,7 +102,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       else if (cmd === "yolo") { autoApprove = true; process.stdout.write(c.yellow("  YOLO: auto-approving every action\n")); }
       else if (cmd === "safe") { autoApprove = false; process.stdout.write(c.dim("  SAFE: ask before write/edit/bash\n")); }
       else if (cmd === "skills") process.stdout.write([...agent.skills.values()].map((s) => `  ${c.bold(s.name)} — ${c.dim(s.description)}`).join("\n") + "\n" || "  (no skills)\n");
-      else if (cmd === "clear") { agent.reset(); process.stdout.write(c.dim("  history cleared\n")); }
+      else if (cmd === "clear") { agent.reset(); activeSkill = null; process.stdout.write(c.dim("  history cleared\n")); }
       else process.stdout.write(c.red(`  unknown command: /${cmd}\n`));
       continue;
     }
@@ -94,6 +111,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       await agent.send(input);
     } catch (e) {
       stopSpin();
+      if (mdStream) { mdStream.end(); mdStream = null; }
       process.stdout.write(c.red(`  ✗ ${e.message}\n`));
     }
   }
