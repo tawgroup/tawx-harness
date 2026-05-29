@@ -28,12 +28,29 @@ else
   git clone --depth 1 "$REPO" "$DIR"
 fi
 
-# 3. Global install (creates the `taw` command)
-echo "→ Installing the global 'taw' command"
-if ! ( cd "$DIR" && npm install -g . >/dev/null 2>&1 ); then
-  echo "  npm -g failed (permissions?). Trying 'npm link'…"
-  ( cd "$DIR" && npm link ) || \
-    echo "  Could not install globally. Run directly: node $DIR/bin/taw.mjs" >&2
+# 3. Make the `taw` command available
+chmod +x "$DIR/bin/taw.mjs"
+echo "→ Installing the 'taw' command"
+if ( cd "$DIR" && npm install -g . >/dev/null 2>&1 ); then
+  echo "  installed globally via npm"
+else
+  # npm global prefix is often root-owned on Linux — fall back to a user-local symlink (no sudo).
+  BIN="$HOME/.local/bin"
+  mkdir -p "$BIN"
+  ln -sf "$DIR/bin/taw.mjs" "$BIN/taw"
+  echo "  npm -g not permitted → linked $BIN/taw"
+  case ":$PATH:" in
+    *":$BIN:"*) ;;
+    *)
+      for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+        [ -e "$rc" ] || continue
+        grep -q 'taw harness PATH' "$rc" 2>/dev/null || \
+          printf '\n# taw harness PATH\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$rc"
+      done
+      echo "  → added ~/.local/bin to PATH. Open a NEW terminal, or run:"
+      echo "      export PATH=\"\$HOME/.local/bin:\$PATH\""
+      ;;
+  esac
 fi
 
 # 4. Env / key
