@@ -37,7 +37,7 @@ taw models                            # liệt kê model gói Go
 ## Model gói Go
 `glm-5.1` `glm-5` · `deepseek-v4-pro` `deepseek-v4-flash` · `qwen3.7-max` `qwen3.6-plus` `qwen3.5-plus` · `kimi-k2.6` `kimi-k2.5` · `minimax-m2.7` `minimax-m2.5` · `mimo-v2.5-pro` `mimo-v2.5`
 
-Tất cả đều hỗ trợ tool-calling. Mặc định **`kimi-k2.5`** — non-reasoning nên in output thẳng, hợp gen code/UI. Các model reasoning (`glm-5`, `deepseek-v4-pro`, `minimax-m2.5`) "suy nghĩ" tốt cho debug nhưng đốt nhiều token vào reasoning → cần `TAW_MAX_TOKENS` cao khi gen file lớn.
+Tất cả đều hỗ trợ tool-calling. Mặc định **`glm-5`** — đáng tin cho vòng lặp agent nhiều bước (multi-turn tool ổn định). `kimi-k2.5` nhanh + non-reasoning, hợp **gen 1-phát** (1 file) nhưng **hỏng multi-turn** trên endpoint Go (báo "Provider returned error" sau vài tool-result) → đừng dùng cho task nhiều bước. Reasoning model (`glm`/`deepseek`/`minimax`) cần `TAW_MAX_TOKENS` cao khi gen file lớn.
 
 > ⚠️ Throughput gói Go biến động (17–47 tok/s); file lớn có thể mất vài phút. Harness có request-timeout (`TAW_REQUEST_TIMEOUT`, mặc định 180s) để không treo. File cực lớn (>15k ký tự) nên chia nhỏ nhiều bước thay vì 1 `write_file`.
 
