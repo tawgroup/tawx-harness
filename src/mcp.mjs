@@ -74,6 +74,7 @@ function stdioTransport(def) {
   });
   let buf = "";
   const waiters = new Map();
+  const pending = new Map(); // responses that arrived before their waiter was registered
   child.stdout.on("data", (d) => {
     buf += d.toString();
     let nl;
@@ -81,15 +82,19 @@ function stdioTransport(def) {
       const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
       if (!line.trim()) continue;
       let m; try { m = JSON.parse(line); } catch { continue; }
-      if (m.id != null && waiters.has(m.id)) { waiters.get(m.id)(m); waiters.delete(m.id); }
+      if (m.id == null) continue;
+      if (waiters.has(m.id)) { waiters.get(m.id)(m); waiters.delete(m.id); }
+      else pending.set(m.id, m); // buffer until rpc() registers (avoids a resolve-microtask race)
     }
   });
+  const settle = (m, res, rej) => (m.error ? rej(new Error(m.error.message || "MCP error")) : res(m.result));
   return async function rpc(message, timeoutMs = 60000) {
     child.stdin.write(JSON.stringify(message) + "\n");
     if (message.id == null) return null;
+    if (pending.has(message.id)) { const m = pending.get(message.id); pending.delete(message.id); return new Promise((res, rej) => settle(m, res, rej)); }
     return new Promise((res, rej) => {
       const t = setTimeout(() => { waiters.delete(message.id); rej(new Error("stdio MCP timeout")); }, timeoutMs);
-      waiters.set(message.id, (m) => { clearTimeout(t); m.error ? rej(new Error(m.error.message || "MCP error")) : res(m.result); });
+      waiters.set(message.id, (m) => { clearTimeout(t); settle(m, res, rej); });
     });
   };
 }

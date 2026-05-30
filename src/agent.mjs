@@ -3,7 +3,6 @@ import { chat } from "./provider.mjs";
 import { TOOLS, toolSchemas } from "./tools.mjs";
 import { loadSkills, skillsIndex, loadSkillTool } from "./skills.mjs";
 import { systemPrompt } from "./prompt.mjs";
-import { loadMcpTools } from "./mcp.mjs";
 import { DEFAULT_MODEL, MAX_STEPS } from "./config.mjs";
 
 function safeParse(s) {
