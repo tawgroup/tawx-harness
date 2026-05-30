@@ -50,6 +50,15 @@ All support tool-calling. Default is **`glm-5`** — reliable for the multi-step
 
 > ⚠️ Go plan throughput varies (17–47 tok/s); large files can take a few minutes. The harness has a request-timeout (`TAW_REQUEST_TIMEOUT`, default 180s) so it won't hang. Very large files (>15k chars) are best generated across several steps instead of one `write_file`.
 
+## MCP (use external tool servers)
+tawx is an **MCP client**: drop a config at `~/.taw/mcp.json` (or `<project>/.taw/mcp.json`) and it connects to those servers and exposes their tools to the model. Supports **stdio** servers (spawned, e.g. `@playwright/mcp` to drive a browser) and **Streamable-HTTP** servers (e.g. an OAuth-protected endpoint — paste the Bearer token). See `mcp.example.json`.
+```json
+{ "mcpServers": {
+  "playwright": { "command": "npx", "args": ["-y", "@playwright/mcp@latest"] }
+} }
+```
+MCP tools require approval like write/bash (auto-approved in headless `run`/`build`). Note: a static HTTP Bearer token does not auto-refresh — re-paste it when it expires.
+
 ## Write a new skill
 Create `skills/<name>.md`:
 ```md
