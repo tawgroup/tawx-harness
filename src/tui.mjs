@@ -14,6 +14,8 @@ ${c.bold("Commands:")}
   /skills          list available skills
   /clear           clear conversation history
   /exit            quit
+
+  Ctrl-C           interrupt the running turn (press again when idle to quit)
 `;
 
 export async function runTui({ model = DEFAULT_MODEL } = {}) {
@@ -66,6 +68,15 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         case "tool_denied":
           process.stdout.write(c.red("    ✗ denied\n"));
           break;
+        case "todos": {
+          const sym = { pending: c.dim("○"), in_progress: c.yellow("◐"), completed: c.green("●") };
+          const out = ev.todos
+            .map((t) => "    " + (sym[t.status] || c.dim("○")) + " " +
+              (t.status === "completed" ? c.dim(t.content) : t.status === "in_progress" ? c.bold(t.content) : t.content))
+            .join("\n");
+          process.stdout.write(c.cyan("  ☑ plan\n") + out + "\n");
+          break;
+        }
         case "usage":
           if (ev.usage?.total_tokens) {
             const secs = turnStart ? `, ${((Date.now() - turnStart) / 1000).toFixed(1)}s` : "";
@@ -99,6 +110,21 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   });
   agent.setModel(model);
 
+  // Ctrl-C: cancel the in-flight turn (like Claude Code). Pressing it when idle exits.
+  let aborter = null;
+  rl.on("SIGINT", () => {
+    if (aborter) {
+      aborter.abort();
+      stopSpin();
+      if (mdStream) { mdStream.end(); mdStream = null; }
+      process.stdout.write(c.yellow("\n  ⎋ interrupting…\n"));
+    } else {
+      rl.close();
+      process.stdout.write(c.dim("\nbye 👋\n"));
+      process.exit(0);
+    }
+  });
+
   process.stdout.write(banner(agent.model));
 
   for (;;) {
@@ -120,11 +146,15 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     }
 
     try {
-      await agent.send(input);
+      aborter = new AbortController();
+      await agent.send(input, { signal: aborter.signal });
     } catch (e) {
       stopSpin();
       if (mdStream) { mdStream.end(); mdStream = null; }
-      process.stdout.write(c.red(`  ✗ ${e.message}\n`));
+      if (aborter?.signal.aborted) process.stdout.write(c.yellow("  ⎋ stopped\n"));
+      else process.stdout.write(c.red(`  ✗ ${e.message}\n`));
+    } finally {
+      aborter = null;
     }
   }
   rl.close();

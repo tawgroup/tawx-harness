@@ -5,6 +5,7 @@ import path from "node:path";
 import assert from "node:assert";
 import { TOOLS } from "../src/tools.mjs";
 import { loadSkills, skillsIndex } from "../src/skills.mjs";
+import { loadProjectContext, systemPrompt } from "../src/prompt.mjs";
 import { API_KEY } from "../src/config.mjs";
 import { createAgent } from "../src/agent.mjs";
 
@@ -39,11 +40,50 @@ const g = await TOOLS.grep.run({ pattern: "taw", path: "." }, ctx);
 assert.ok(g.includes("taw"));
 ok("grep");
 
+const gInc = await TOOLS.grep.run({ pattern: "taw", path: ".", include: "*.md" }, ctx);
+assert.ok(gInc.includes("no matches") || !gInc.includes("a.txt"), "include glob should filter out a.txt");
+ok("grep include filter");
+
+// read_file offset/limit (partial read)
+await TOOLS.write_file.run({ path: "many.txt", content: "L1\nL2\nL3\nL4\nL5" }, ctx);
+const slice = await TOOLS.read_file.run({ path: "many.txt", offset: 2, limit: 2 }, ctx);
+assert.ok(slice.includes("L2") && slice.includes("L3") && !slice.includes("L5"), "partial read");
+assert.ok(/lines 2-3 of 5/.test(slice), "partial-read note");
+ok("read_file offset/limit");
+
+// glob
+await TOOLS.write_file.run({ path: "src/deep/x.mjs", content: "export const x=1" }, ctx);
+await TOOLS.write_file.run({ path: "node_modules/junk/y.mjs", content: "skip me" }, ctx);
+const gl = await TOOLS.glob.run({ pattern: "**/*.mjs", path: "." }, ctx);
+assert.ok(gl.includes("src/deep/x.mjs"), "glob finds nested file");
+assert.ok(!gl.includes("node_modules"), "glob skips node_modules");
+ok("glob (** + ignore dirs)");
+
+// todo_write
+const todoEvents = [];
+const tctx = { ...ctx, onEvent: (e) => todoEvents.push(e) };
+const td = await TOOLS.todo_write.run(
+  { todos: [{ content: "step a", status: "completed" }, { content: "step b", status: "in_progress" }] },
+  tctx,
+);
+assert.ok(td.includes("1/2 done") && td.includes("[x] step a") && td.includes("[~] step b"), "todo render");
+assert.ok(todoEvents.some((e) => e.type === "todos"), "todo emits event");
+ok("todo_write");
+
 console.log("OFFLINE skills:");
 const skills = loadSkills(process.cwd());
 assert.ok(skills.size >= 1, "should load bundled skills");
 assert.ok(skillsIndex(skills).includes("git-commit"));
 ok(`loaded ${skills.size} skills`);
+
+console.log("OFFLINE project context:");
+fs.writeFileSync(path.join(tmp, "AGENTS.md"), "Use 2-space indent. Prefer fp style.");
+const pc = loadProjectContext(tmp);
+assert.ok(pc && pc.name === "AGENTS.md" && /2-space indent/.test(pc.text), "loads AGENTS.md");
+const sys = systemPrompt({ cwd: tmp, model: "glm-5", skillsIndexStr: "" });
+assert.ok(sys.includes("Project instructions") && sys.includes("2-space indent"), "injects into prompt");
+assert.ok(sys.includes("glob") && sys.includes("todo_write"), "prompt advertises new tools");
+ok("AGENTS.md auto-loaded into system prompt");
 
 if (!API_KEY) {
   console.log("\nLIVE test: SKIPPED (OPENCODE_API_KEY not set)");

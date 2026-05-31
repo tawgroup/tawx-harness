@@ -6,7 +6,8 @@ A tiny **from-scratch coding agent harness** — Claude Code style, but running 
 
 ## What's inside
 - 🔁 **Agent loop** that calls tools until the task is done (native function-calling).
-- 🛠️ **Tools**: `read_file`, `write_file`, `edit_file`, `list_dir`, `grep`, `bash`.
+- 🛠️ **Tools**: `read_file` (with offset/limit), `write_file`, `edit_file`, `glob`, `grep` (include-glob + context), `list_dir`, `bash`, `todo_write` (task checklist).
+- 📋 **Project context**: auto-loads `AGENTS.md` / `CLAUDE.md` / `.taw/context.md` from the repo into the system prompt — the agent follows your conventions without being told each turn.
 - 🧩 **Skills**: Markdown files loaded on demand (like Claude Code skills). Put them in `skills/`, or `.taw/skills/` (project), or `~/.taw/skills/` (user).
 - 💬 Interactive **TUI** (color, spinner, action approval) + **headless** mode for CI/auto-build.
 - ♻️ **Self-verify build** (`tawx build --verify`): build → run a verify command → auto-fix → repeat until it passes.
@@ -42,6 +43,7 @@ tawx models                                  # list Go plan models
 
 ### TUI commands
 `/model <id>` · `/models` · `/yolo` (auto-approve) · `/safe` · `/skills` · `/clear` · `/exit`
+`Ctrl-C` interrupts the running turn (press again when idle to quit).
 
 ## Go plan models
 `glm-5.1` `glm-5` · `deepseek-v4-pro` `deepseek-v4-flash` · `qwen3.7-max` `qwen3.6-plus` `qwen3.5-plus` · `kimi-k2.6` `kimi-k2.5` · `minimax-m2.7` `minimax-m2.5` · `mimo-v2.5-pro` `mimo-v2.5`

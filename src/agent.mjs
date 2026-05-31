@@ -34,7 +34,7 @@ export function createAgent(opts = {}) {
   const skills = loadSkills(cwd);
   const registry = { ...TOOLS, load_skill: loadSkillTool(skills) };
   const tools = toolSchemas([registry.load_skill.schema]);
-  const ctx = { cwd };
+  const ctx = { cwd, onEvent }; // onEvent lets tools (e.g. todo_write) surface UI events
 
   const messages = [
     { role: "system", content: systemPrompt({ cwd, model, skillsIndexStr: skillsIndex(skills) }) },
@@ -55,8 +55,28 @@ export function createAgent(opts = {}) {
     }
   }
 
+  // After an interrupt, the log can end on an assistant tool_calls message whose tool
+  // results never got pushed. Most providers reject that. Synthesize the missing results
+  // so the next turn starts from a coherent state.
+  function reconcileToolCalls() {
+    let ai = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant" && messages[i].tool_calls?.length) { ai = i; break; }
+      if (messages[i].role === "user") break;
+    }
+    if (ai === -1) return;
+    const answered = new Set(
+      messages.slice(ai + 1).filter((m) => m.role === "tool").map((m) => m.tool_call_id),
+    );
+    for (const call of messages[ai].tool_calls) {
+      if (!answered.has(call.id))
+        messages.push({ role: "tool", tool_call_id: call.id, content: "(interrupted by user)" });
+    }
+  }
+
   async function send(userText, { signal } = {}) {
     await ensureMcp();
+    reconcileToolCalls();
     messages.push({ role: "user", content: userText });
 
     for (let step = 0; step < maxSteps; step++) {
