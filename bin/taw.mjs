@@ -66,13 +66,18 @@ async function login(providerArg = "") {
 
   const old = AUTH.providers?.[provider] || {};
   const model = getFlag("--model", "") || await prompt("Default model", old.model || cfg.defaultModel);
-  const baseUrl = getFlag("--base-url", "") || getFlag("--url", "") || await prompt("Base URL", old.baseUrl || cfg.baseUrl);
+  const baseUrl = cfg.type === "claude-cli"
+    ? ""
+    : getFlag("--base-url", "") || getFlag("--url", "") || await prompt("Base URL", old.baseUrl || cfg.baseUrl);
 
   const next = { ...AUTH, active: provider, providers: { ...(AUTH.providers || {}) } };
   if (provider === "codex") {
     const method = getFlag("--method", "") || await prompt("Login method: browser/device", "browser");
     const oauth = method === "device" ? await loginCodexDeviceCode() : await loginCodexBrowser({ ask: prompt });
     next.providers[provider] = { model, baseUrl, oauth };
+  } else if (cfg.type === "claude-cli") {
+    process.stdout.write(c.dim("Using local `claude` command auth; no API key stored. Run `claude` once if not logged in.\n"));
+    next.providers[provider] = { model, baseUrl };
   } else {
     const flagKey = getFlag("--api-key", "") || getFlag("--key", "");
     const apiKey = flagKey || await prompt(`API key (${cfg.keyEnv})`, old.apiKey ? "keep-existing" : "");
@@ -112,7 +117,7 @@ Usage:
   tawx build "<task>" --verify "<cmd>"
                                self-driving loop: build → run verify command →
                                if it fails, auto-fix → repeat until it PASSES (hands-off)
-  tawx login [provider]        save credentials (opencode/claude API key, codex OAuth)
+  tawx login [provider]        save credentials (opencode/anthropic API key, codex OAuth, claude CLI)
   tawx use <provider>          switch active provider/model without changing key
   tawx whoami                  show active provider
   tawx models                  list models for the active provider

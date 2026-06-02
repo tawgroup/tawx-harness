@@ -71,13 +71,18 @@ async function tuiLogin(providerName, ask) {
 
   const old = AUTH.providers?.[provider] || {};
   const model = (await ask(c.yellow(`  default model [${old.model || cfg.defaultModel}]: `))).trim() || old.model || cfg.defaultModel;
-  const baseUrl = (await ask(c.yellow(`  base URL [${old.baseUrl || cfg.baseUrl}]: `))).trim() || old.baseUrl || cfg.baseUrl;
+  const baseUrl = cfg.type === "claude-cli"
+    ? ""
+    : (await ask(c.yellow(`  base URL [${old.baseUrl || cfg.baseUrl}]: `))).trim() || old.baseUrl || cfg.baseUrl;
 
   const next = { ...AUTH, active: provider, providers: { ...(AUTH.providers || {}) } };
   if (provider === "codex") {
     const method = ((await ask(c.yellow("  codex login method browser/device [browser]: "))).trim() || "browser").toLowerCase();
     const oauth = method === "device" ? await loginCodexDeviceCode() : await loginCodexBrowser({ ask: async (q) => ask(c.yellow("  " + q + ": ")) });
     next.providers[provider] = { model, baseUrl, oauth };
+  } else if (cfg.type === "claude-cli") {
+    process.stdout.write(c.dim("  using local `claude` command auth; no API key stored. Run `claude` once if not logged in.\n"));
+    next.providers[provider] = { model, baseUrl };
   } else {
     const apiKey = (await ask(c.yellow(`  API key ${old.apiKey ? "[keep existing]" : ""}: `))).trim() || old.apiKey || "";
     if (!apiKey) { process.stdout.write(c.red("  missing API key\n")); return; }
@@ -105,7 +110,7 @@ async function tuiUse(providerName, modelArg, ask) {
 const HELP = `
 ${c.bold("Commands:")}
   /help            show help
-  /login [name]    login provider in TUI: opencode | codex | claude
+  /login [name]    login provider in TUI: opencode | codex | claude | anthropic
   /use <name>      switch provider in TUI and restart
   /model <id>      switch model for this TUI session (e.g. /model qwen3.6-plus)
   /models          list models for active provider

@@ -1,4 +1,5 @@
-// Model clients: OpenAI-compatible chat/completions + Anthropic Messages (Claude).
+// Model clients: OpenAI-compatible chat/completions + Anthropic Messages + Claude Code CLI.
+import { spawn } from "node:child_process";
 import { BASE_URL, API_KEY, MAX_TOKENS, REQUEST_TIMEOUT_MS, PROVIDER_CONFIG, PROVIDER, AUTH, SAVED_PROVIDER, saveAuth } from "./config.mjs";
 import { codexAccountId, refreshCodexOAuth } from "./codex-oauth.mjs";
 
@@ -384,12 +385,64 @@ async function chatCodex({ messages, tools, model, signal, onToken }) {
   return { message, finish_reason: tool_calls.length ? "tool_calls" : "stop", usage };
 }
 
+function lastUserText(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") return String(messages[i].content || "");
+  }
+  return "";
+}
+
+async function chatClaudeCli({ messages, model, cwd, signal, onToken }) {
+  const prompt = lastUserText(messages);
+  if (!prompt) return { message: { role: "assistant", content: "" }, finish_reason: "stop", usage: {} };
+
+  const args = [
+    "-p",
+    "--model", model,
+    "--permission-mode", "bypassPermissions",
+    "--output-format", "text",
+    prompt,
+  ];
+
+  return await new Promise((resolve, reject) => {
+    const child = spawn("claude", args, { cwd: cwd || process.cwd(), env: process.env });
+    let out = "";
+    let err = "";
+    let emitted = 0;
+
+    const abort = () => {
+      try { child.kill("SIGTERM"); } catch { /* ignore */ }
+      reject(new Error("Claude CLI request aborted"));
+    };
+    if (signal) signal.addEventListener("abort", abort, { once: true });
+
+    child.stdout.on("data", (b) => {
+      const s = b.toString();
+      out += s;
+      if (onToken && s) { emitted += s.length; onToken(s); }
+    });
+    child.stderr.on("data", (b) => { err += b.toString(); });
+    child.on("error", (e) => reject(new Error(`Claude CLI not available: ${e.message}. Install/login with: claude`)));
+    child.on("close", (code) => {
+      if (signal) signal.removeEventListener("abort", abort);
+      if (code !== 0) {
+        reject(new Error(`Claude CLI failed (exit ${code}): ${(err || out).trim().slice(-1000)}`));
+        return;
+      }
+      const content = out.trim();
+      // If streamed to UI, avoid printing the same content twice via assistant event.
+      resolve({ message: { role: "assistant", content: onToken && emitted ? "" : content }, finish_reason: "stop", usage: {} });
+    });
+  });
+}
+
 /**
  * Call the model once.
  * @returns {Promise<{message: object, finish_reason: string, usage: object}>}
  */
 export async function chat(opts) {
   const maxTokens = opts.maxTokens || MAX_TOKENS;
+  if (PROVIDER_CONFIG.type === "claude-cli") return chatClaudeCli({ ...opts, maxTokens });
   if (PROVIDER_CONFIG.type === "codex") return chatCodex({ ...opts, maxTokens });
   if (PROVIDER_CONFIG.type === "anthropic") return chatAnthropic({ ...opts, maxTokens });
   return chatOpenAi({ ...opts, maxTokens });

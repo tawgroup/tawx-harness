@@ -80,8 +80,16 @@ export const PROVIDERS = {
     models: ["gpt-5.5", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5-codex"],
   },
   claude: {
+    type: "claude-cli",
+    label: "Claude Code CLI (subscription)",
+    baseUrl: "",
+    keyEnv: "",
+    defaultModel: "sonnet",
+    models: ["sonnet", "opus", "haiku"],
+  },
+  anthropic: {
     type: "anthropic",
-    label: "Claude / Anthropic API",
+    label: "Claude / Anthropic API key",
     baseUrl: "https://api.anthropic.com/v1",
     keyEnv: "ANTHROPIC_API_KEY",
     defaultModel: "claude-sonnet-4-5",
@@ -116,6 +124,7 @@ export const REQUEST_TIMEOUT_MS = Number(process.env.TAW_REQUEST_TIMEOUT || 1800
 export const TOOL_OUTPUT_CAP = Number(process.env.TAW_TOOL_CAP || 30000);
 
 export function assertKey() {
+  if (PROVIDER_CONFIG.type === "claude-cli") return;
   if (!API_KEY) {
     throw new Error(
       `No auth for provider "${PROVIDER}". Run: tawx login ${PROVIDER}\n` +

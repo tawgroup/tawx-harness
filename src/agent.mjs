@@ -68,6 +68,7 @@ export function createAgent(opts = {}) {
         messages,
         tools,
         model,
+        cwd,
         signal,
         onToken: stream ? (t) => onEvent({ type: "assistant_delta", text: t }) : undefined,
       });
