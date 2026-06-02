@@ -2,13 +2,13 @@
 import readline from "node:readline";
 import { createAgent } from "./agent.mjs";
 import { c, banner, renderMarkdown, createMdStream } from "./ui.mjs";
-import { GO_MODELS, DEFAULT_MODEL } from "./config.mjs";
+import { MODELS, DEFAULT_MODEL, PROVIDER } from "./config.mjs";
 
 const HELP = `
 ${c.bold("Commands:")}
   /help            show help
   /model <id>      switch model (e.g. /model qwen3.6-plus)
-  /models          list OpenCode Go models
+  /models          list models for active provider
   /yolo            auto-approve every action (write/edit/bash)
   /safe            turn off auto-approve (default)
   /clear           clear conversation history
@@ -115,7 +115,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     }
   });
 
-  process.stdout.write(banner(agent.model));
+  process.stdout.write(banner(`${agent.model} · ${PROVIDER}`));
 
   for (;;) {
     const input = (await ask(c.magenta("› "))).trim();
@@ -125,7 +125,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       const [cmd, ...rest] = input.slice(1).split(/\s+/);
       if (cmd === "exit" || cmd === "quit") break;
       else if (cmd === "help") process.stdout.write(HELP + "\n");
-      else if (cmd === "models") process.stdout.write("  " + GO_MODELS.join("\n  ") + "\n");
+      else if (cmd === "models") process.stdout.write("  " + MODELS.join("\n  ") + "\n");
       else if (cmd === "model") { if (rest[0]) { agent.setModel(rest[0]); process.stdout.write(c.dim(`  model → ${rest[0]}\n`)); } }
       else if (cmd === "yolo") { autoApprove = true; process.stdout.write(c.yellow("  YOLO: auto-approving every action\n")); }
       else if (cmd === "safe") { autoApprove = false; process.stdout.write(c.dim("  SAFE: ask before write/edit/bash\n")); }

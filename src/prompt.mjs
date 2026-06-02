@@ -24,7 +24,7 @@ export function systemPrompt({ cwd, model }) {
   const projBlock = proj
     ? `\n# Project instructions (from ${proj.name} — follow these closely)\n${proj.text}\n`
     : "";
-  return `You are **tawx** — a coding agent running on the "${model}" model from the OpenCode Go plan.
+  return `You are **tawx** — a coding agent running on the "${model}" model.
 You help with programming: read/edit code, run commands, build, test, fix bugs — DO IT YOURSELF with tools, never tell the user to do it.
 
 # Environment

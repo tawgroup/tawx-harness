@@ -33,13 +33,20 @@ cp .env.example .env
 tawx
 ```
 
-Put your key/config in `~/.taw/.env` or `.env`:
+Login once and choose a provider:
 
 ```bash
-OPENCODE_API_KEY=sk-...
+tawx login      # opencode / codex / claude
+tawx whoami
+```
+
+`tawx login` saves credentials to `~/.taw/auth.json` (`0600`). You can still override with env:
+
+```bash
+TAW_PROVIDER=opencode   # opencode | codex | claude
+TAW_API_KEY=sk-...
 TAW_MODEL=glm-5
-# optional custom OpenAI-compatible endpoint
-# TAW_BASE_URL=https://opencode.ai/zen/go/v1
+TAW_BASE_URL=https://opencode.ai/zen/go/v1
 ```
 
 ## Use
@@ -49,6 +56,8 @@ tawx
 tawx run "write a python fibonacci script and run it"
 tawx run "fix the build error in this repo" --model qwen3.6-plus
 tawx build "make a todo API in Node http with tests" --verify "node --test test.mjs"
+tawx login
+tawx whoami
 tawx models
 ```
 

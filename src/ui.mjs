@@ -21,7 +21,7 @@ export function banner(model) {
   return (
     "\n" +
     c.bold(c.magenta("  ▟▙ tawx")) +
-    c.dim("  · powered by OpenCode Go (cheap models)") +
+    c.dim("  · minimal coding agent harness") +
     "\n" +
     line +
     "\n" +

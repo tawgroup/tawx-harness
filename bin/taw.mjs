@@ -2,9 +2,10 @@
 // tawx-harness CLI entry. Modes: TUI (default), headless run, self-verify build, models, help.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import readline from "node:readline";
 import { createAgent } from "../src/agent.mjs";
 import { runTui } from "../src/tui.mjs";
-import { assertKey, GO_MODELS, DEFAULT_MODEL } from "../src/config.mjs";
+import { assertKey, MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, saveAuth, AUTH_PATH } from "../src/config.mjs";
 import { c } from "../src/ui.mjs";
 
 const argv = process.argv.slice(2);
@@ -43,7 +44,39 @@ const headlessEvents = {
 
 const model = getFlag("--model", DEFAULT_MODEL);
 
-const HELP = `tawx — coding agent powered by OpenCode Go (cheap models)
+async function prompt(q, def = "") {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const suffix = def ? ` (${def})` : "";
+  const ans = await new Promise((r) => rl.question(q + suffix + ": ", r));
+  rl.close();
+  return ans.trim() || def;
+}
+
+async function login() {
+  process.stdout.write("Choose provider:\n");
+  const names = Object.keys(PROVIDERS);
+  names.forEach((name, i) => process.stdout.write(`  ${i + 1}. ${name} — ${PROVIDERS[name].label}\n`));
+  const picked = await prompt("Provider", PROVIDER);
+  const provider = names[Number(picked) - 1] || picked;
+  const cfg = PROVIDERS[provider];
+  if (!cfg) throw new Error(`Unknown provider: ${provider}`);
+
+  const old = AUTH.providers?.[provider] || {};
+  const model = await prompt("Default model", old.model || cfg.defaultModel);
+  const baseUrl = await prompt("Base URL", old.baseUrl || cfg.baseUrl);
+  const apiKey = await prompt(`API key (${cfg.keyEnv})`, old.apiKey ? "keep-existing" : "");
+
+  const next = { ...AUTH, active: provider, providers: { ...(AUTH.providers || {}) } };
+  next.providers[provider] = {
+    model,
+    baseUrl,
+    apiKey: apiKey === "keep-existing" ? old.apiKey : apiKey,
+  };
+  saveAuth(next);
+  process.stdout.write(c.green(`✓ Logged in to ${provider}. Saved ${AUTH_PATH}\n`));
+}
+
+const HELP = `tawx — minimal coding agent harness
 
 Usage:
   tawx                         open interactive TUI (chat)
@@ -52,7 +85,9 @@ Usage:
   tawx build "<task>" --verify "<cmd>"
                                self-driving loop: build → run verify command →
                                if it fails, auto-fix → repeat until it PASSES (hands-off)
-  tawx models                  list OpenCode Go models
+  tawx login                   save provider credentials (opencode/codex/claude)
+  tawx whoami                  show active provider
+  tawx models                  list models for the active provider
   tawx --help
 
 Options:
@@ -64,7 +99,10 @@ Options:
   --rounds <n>                 (build) max auto-fix rounds (default 4)
 
 Env:
-  OPENCODE_API_KEY=<Go plan key>   (required; or put it in .env)
+  TAW_PROVIDER=<opencode|codex|claude>
+  TAW_API_KEY=<key>                override saved provider key
+  TAW_MODEL=<model>                override saved/default model
+  TAW_BASE_URL=<url>               override provider endpoint
   TAW_REQUEST_TIMEOUT=<ms>         per-request timeout (default 180000)
 `;
 
@@ -75,8 +113,16 @@ async function main() {
     process.stdout.write(HELP);
     return;
   }
+  if (cmd === "login") {
+    await login();
+    return;
+  }
+  if (cmd === "whoami") {
+    process.stdout.write(`provider: ${PROVIDER}\nmodel: ${DEFAULT_MODEL}\nauth: ${AUTH_PATH}\n`);
+    return;
+  }
   if (cmd === "models") {
-    process.stdout.write(GO_MODELS.join("\n") + "\n");
+    process.stdout.write(MODELS.join("\n") + "\n");
     return;
   }
 

@@ -1,7 +1,10 @@
-// tawx-harness config — resolves API key, base URL, model from env/.env/CLI.
+// tawx-harness config — resolves provider, API key, base URL, model from env/.env/auth.json/CLI.
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+
+export const TAW_DIR = path.join(os.homedir(), ".taw");
+export const AUTH_PATH = path.join(TAW_DIR, "auth.json");
 
 // ---- minimal .env loader (zero-dep) ----
 function loadDotenv(dir) {
@@ -20,46 +23,89 @@ function loadDotenv(dir) {
   }
 }
 loadDotenv(process.cwd());
-loadDotenv(path.join(os.homedir(), ".taw"));
+loadDotenv(TAW_DIR);
 
-// ---- OpenCode Go endpoint (verified: bills the $10 Go subscription, cost=0) ----
+function readAuth() {
+  try {
+    if (!fs.existsSync(AUTH_PATH)) return {};
+    return JSON.parse(fs.readFileSync(AUTH_PATH, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+export function saveAuth(auth) {
+  fs.mkdirSync(TAW_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(AUTH_PATH, JSON.stringify(auth, null, 2) + "\n", { mode: 0o600 });
+  try { fs.chmodSync(AUTH_PATH, 0o600); } catch { /* ignore */ }
+}
+
+export const AUTH = readAuth();
+
+export const PROVIDERS = {
+  opencode: {
+    type: "openai",
+    label: "OpenCode Go",
+    baseUrl: "https://opencode.ai/zen/go/v1",
+    keyEnv: "OPENCODE_API_KEY",
+    defaultModel: "glm-5",
+    models: [
+      "glm-5.1", "glm-5",
+      "deepseek-v4-pro", "deepseek-v4-flash",
+      "qwen3.7-max", "qwen3.6-plus", "qwen3.5-plus",
+      "kimi-k2.6", "kimi-k2.5",
+      "minimax-m2.7", "minimax-m2.5",
+      "mimo-v2.5-pro", "mimo-v2.5",
+    ],
+  },
+  codex: {
+    type: "openai",
+    label: "OpenAI / Codex",
+    baseUrl: "https://api.openai.com/v1",
+    keyEnv: "OPENAI_API_KEY",
+    defaultModel: "gpt-5-codex",
+    models: ["gpt-5-codex", "gpt-5", "gpt-4.1", "gpt-4o"],
+  },
+  claude: {
+    type: "anthropic",
+    label: "Claude / Anthropic",
+    baseUrl: "https://api.anthropic.com/v1",
+    keyEnv: "ANTHROPIC_API_KEY",
+    defaultModel: "claude-sonnet-4-5",
+    models: ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5", "claude-3-5-sonnet-latest"],
+  },
+};
+
+export const PROVIDER = process.env.TAW_PROVIDER || AUTH.active || "opencode";
+export const PROVIDER_CONFIG = PROVIDERS[PROVIDER] || PROVIDERS.opencode;
+const saved = AUTH.providers?.[PROVIDER] || {};
+
 export const BASE_URL =
-  process.env.TAW_BASE_URL || "https://opencode.ai/zen/go/v1";
+  process.env.TAW_BASE_URL || saved.baseUrl || PROVIDER_CONFIG.baseUrl;
 
 export const API_KEY =
-  process.env.OPENCODE_API_KEY || process.env.TAW_API_KEY || "";
+  process.env.TAW_API_KEY ||
+  process.env[PROVIDER_CONFIG.keyEnv] ||
+  saved.apiKey ||
+  // Back-compat for old opencode setup.
+  (PROVIDER === "opencode" ? process.env.OPENCODE_API_KEY : "") ||
+  "";
 
-// Models included in the OpenCode Go subscription (verified via /zen/go/v1/models).
-export const GO_MODELS = [
-  "glm-5.1", "glm-5",
-  "deepseek-v4-pro", "deepseek-v4-flash",
-  "qwen3.7-max", "qwen3.6-plus", "qwen3.5-plus",
-  "kimi-k2.6", "kimi-k2.5",
-  "minimax-m2.7", "minimax-m2.5",
-  "mimo-v2.5-pro", "mimo-v2.5",
-];
-
-// glm-5: RELIABLE for the agent loop (stable multi-turn tool calls).
-// kimi-k2.5 is fast + non-reasoning BUT breaks on multi-turn ("Provider returned error"
-// after a few tool-results) → only good for one-shot gen (TAW_MODEL=kimi-k2.5 + max-steps 1-2), not a good default.
-export const DEFAULT_MODEL = process.env.TAW_MODEL || "glm-5";
+export const DEFAULT_MODEL = process.env.TAW_MODEL || saved.model || PROVIDER_CONFIG.defaultModel;
+export const MODELS = PROVIDER_CONFIG.models;
+export const GO_MODELS = PROVIDERS.opencode.models; // backwards-compatible export
 
 export const MAX_STEPS = Number(process.env.TAW_MAX_STEPS || 40);
 export const MAX_TOKENS = Number(process.env.TAW_MAX_TOKENS || 8192);
-// Auto-compaction: when the running conversation exceeds this many estimated tokens,
-// older turns are summarized so a long task doesn't overflow the model context window.
-// 0 disables it. Cheap Go models have ~128k windows; default leaves generous headroom.
 export const COMPACT_THRESHOLD = Number(process.env.TAW_COMPACT_THRESHOLD || 60000);
-// hard timeout per model request — cheap Go models can stall on big generations
 export const REQUEST_TIMEOUT_MS = Number(process.env.TAW_REQUEST_TIMEOUT || 180000);
-// cap of bytes returned to the model from a single tool result
 export const TOOL_OUTPUT_CAP = Number(process.env.TAW_TOOL_CAP || 30000);
 
 export function assertKey() {
   if (!API_KEY) {
     throw new Error(
-      "No API key. Set OPENCODE_API_KEY (your OpenCode Go plan key) in env or .env.\n" +
-        "Get a key at: https://opencode.ai → workspace → API Keys",
+      `No API key for provider "${PROVIDER}". Run: tawx login\n` +
+        `Or set ${PROVIDER_CONFIG.keyEnv}=... / TAW_API_KEY=... in env or .env.`,
     );
   }
 }

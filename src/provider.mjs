@@ -1,5 +1,5 @@
-// OpenCode Go client — OpenAI-compatible /chat/completions (with optional streaming).
-import { BASE_URL, API_KEY, MAX_TOKENS, REQUEST_TIMEOUT_MS } from "./config.mjs";
+// Model clients: OpenAI-compatible chat/completions + Anthropic Messages (Claude).
+import { BASE_URL, API_KEY, MAX_TOKENS, REQUEST_TIMEOUT_MS, PROVIDER_CONFIG } from "./config.mjs";
 
 const SLEEP = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -7,12 +7,12 @@ function isFatal(status, type, msg) {
   return (
     status === 401 ||
     status === 403 ||
-    /CreditsError|ModelError|Insufficient|unauthor|invalid api key/i.test(`${type} ${msg}`)
+    /CreditsError|ModelError|Insufficient|unauthor|invalid api key|authentication/i.test(`${type} ${msg}`)
   );
 }
 
-// Parse a streaming SSE response, emitting content deltas via onToken.
-async function parseStream(res, onToken, bump) {
+// Parse OpenAI-compatible streaming SSE response, emitting content deltas via onToken.
+async function parseOpenAiStream(res, onToken, bump) {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
@@ -65,11 +65,7 @@ async function parseStream(res, onToken, bump) {
   return { message, finish_reason, usage, cost };
 }
 
-/**
- * Call the model once. If onToken is given (and TAW_NO_STREAM is unset), streams the reply.
- * @returns {Promise<{message: object, finish_reason: string, usage: object}>}
- */
-export async function chat({ messages, tools, model, maxTokens = MAX_TOKENS, signal, onToken }) {
+async function chatOpenAi({ messages, tools, model, maxTokens, signal, onToken }) {
   const stream = typeof onToken === "function" && !process.env.TAW_NO_STREAM;
   const body = { model, messages, max_tokens: maxTokens };
   if (tools && tools.length) {
@@ -86,7 +82,6 @@ export async function chat({ messages, tools, model, maxTokens = MAX_TOKENS, sig
   const tokenOnce = (t) => { emitted = true; onToken(t); };
 
   for (let attempt = 0; attempt < 6; attempt++) {
-    // hard timeout, reset on each received chunk so long but live streams don't trip it
     const ctl = new AbortController();
     const onAbort = () => ctl.abort();
     if (signal) signal.addEventListener("abort", onAbort, { once: true });
@@ -119,15 +114,11 @@ export async function chat({ messages, tools, model, maxTokens = MAX_TOKENS, sig
         continue;
       }
 
-      if (stream) {
-        return await parseStream(res, tokenOnce, bump);
-      }
+      if (stream) return await parseOpenAiStream(res, tokenOnce, bump);
 
       const text = await res.text();
       let json;
-      try {
-        json = JSON.parse(text);
-      } catch {
+      try { json = JSON.parse(text); } catch {
         lastErr = new Error(`Bad response (${res.status}): ${text.slice(0, 300)}`);
         await SLEEP(500 * (attempt + 1));
         continue;
@@ -153,15 +144,116 @@ export async function chat({ messages, tools, model, maxTokens = MAX_TOKENS, sig
       return { message, finish_reason: choice.finish_reason, usage: json.usage || {}, cost: json.cost };
     } catch (e) {
       if (signal?.aborted) throw e;
-      // if we already streamed tokens to the user, don't retry (would duplicate output)
       if (emitted) throw e;
       lastErr = new Error(`request error/timeout: ${e.message}`);
       await SLEEP(500 * (attempt + 1));
-      continue;
     } finally {
       clearTimeout(timer);
       if (signal) signal.removeEventListener("abort", onAbort);
     }
   }
   throw lastErr || new Error("request failed");
+}
+
+function toAnthropic(messages) {
+  let system = "";
+  const out = [];
+  for (const m of messages) {
+    if (m.role === "system") { system += (system ? "\n\n" : "") + m.content; continue; }
+    if (m.role === "tool") {
+      out.push({
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: m.tool_call_id, content: String(m.content || "") }],
+      });
+      continue;
+    }
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      const content = [];
+      if (m.content) content.push({ type: "text", text: m.content });
+      for (const tc of m.tool_calls) {
+        let input = {};
+        try { input = JSON.parse(tc.function?.arguments || "{}"); } catch { /* ignore */ }
+        content.push({ type: "tool_use", id: tc.id, name: tc.function?.name, input });
+      }
+      out.push({ role: "assistant", content });
+      continue;
+    }
+    out.push({ role: m.role === "assistant" ? "assistant" : "user", content: String(m.content || "") });
+  }
+  return { system, messages: out };
+}
+
+function toolsToAnthropic(tools = []) {
+  return tools.map((t) => ({
+    name: t.function.name,
+    description: t.function.description || "",
+    input_schema: t.function.parameters || { type: "object", properties: {} },
+  }));
+}
+
+async function chatAnthropic({ messages, tools, model, maxTokens, signal }) {
+  const { system, messages: amessages } = toAnthropic(messages);
+  const body = { model, max_tokens: maxTokens, messages: amessages };
+  if (system) body.system = system;
+  const atools = toolsToAnthropic(tools);
+  if (atools.length) body.tools = atools;
+
+  let lastErr;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const ctl = new AbortController();
+    const onAbort = () => ctl.abort();
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => ctl.abort(new Error("timeout")), REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${BASE_URL}/messages`, {
+        method: "POST",
+        headers: {
+          "x-api-key": API_KEY,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: ctl.signal,
+      });
+      const text = await res.text();
+      let json; try { json = JSON.parse(text); } catch { json = null; }
+      if (!res.ok) {
+        const err = json?.error || {};
+        const type = err.type || `HTTP ${res.status}`;
+        const msg = err.message || text.slice(0, 300);
+        if (isFatal(res.status, type, msg)) throw new Error(`${type}: ${msg}`);
+        lastErr = new Error(`${type}: ${msg}`);
+        await SLEEP(800 * (attempt + 1));
+        continue;
+      }
+      const blocks = json?.content || [];
+      const textOut = blocks.filter((b) => b.type === "text").map((b) => b.text || "").join("\n");
+      const tool_calls = blocks.filter((b) => b.type === "tool_use").map((b, i) => ({
+        id: b.id || `call_${i}`,
+        type: "function",
+        function: { name: b.name, arguments: JSON.stringify(b.input || {}) },
+      }));
+      const message = { role: "assistant", content: textOut };
+      if (tool_calls.length) message.tool_calls = tool_calls;
+      return { message, finish_reason: json?.stop_reason, usage: json?.usage || {} };
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      lastErr = new Error(`request error/timeout: ${e.message}`);
+      await SLEEP(500 * (attempt + 1));
+    } finally {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+    }
+  }
+  throw lastErr || new Error("request failed");
+}
+
+/**
+ * Call the model once.
+ * @returns {Promise<{message: object, finish_reason: string, usage: object}>}
+ */
+export async function chat(opts) {
+  const maxTokens = opts.maxTokens || MAX_TOKENS;
+  if (PROVIDER_CONFIG.type === "anthropic") return chatAnthropic({ ...opts, maxTokens });
+  return chatOpenAi({ ...opts, maxTokens });
 }
