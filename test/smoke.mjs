@@ -5,7 +5,7 @@ import path from "node:path";
 import assert from "node:assert";
 import { TOOLS } from "../src/tools.mjs";
 import { loadProjectContext, systemPrompt } from "../src/prompt.mjs";
-import { API_KEY } from "../src/config.mjs";
+import { API_KEY, DEFAULT_MODEL, PROVIDER } from "../src/config.mjs";
 import { createAgent } from "../src/agent.mjs";
 
 let pass = 0;
@@ -88,7 +88,7 @@ console.log("\nLIVE end-to-end (real call to the Go plan):");
 const liveDir = fs.mkdtempSync(path.join(os.tmpdir(), "taw-live-"));
 const agent = createAgent({
   cwd: liveDir,
-  model: process.env.TAW_MODEL || "glm-5",
+  model: process.env.TAW_MODEL || DEFAULT_MODEL,
   maxSteps: 15,
   approve: async () => true,
   onEvent: (ev) => {
@@ -107,5 +107,5 @@ const content = fs.readFileSync(path.join(liveDir, "hello.mjs"), "utf8");
 assert.ok(/TAW OK/.test(content), "file should contain TAW OK");
 ok("file content is correct");
 
-console.log(`\n${pass} checks passed ✓ — harness works end-to-end on the Go plan.`);
+console.log(`\n${pass} checks passed ✓ — harness works end-to-end on ${PROVIDER}.`);
 process.exit(0);

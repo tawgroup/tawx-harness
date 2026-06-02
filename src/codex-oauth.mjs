@@ -115,8 +115,10 @@ export async function loginCodexBrowser({ ask }) {
   const server = await startServer(state);
   console.log(`Open this URL if the browser does not open:\n${url}\n`);
   openBrowser(url.toString());
-  let code = await Promise.race([server.wait(), ask("Paste authorization code/full redirect URL if browser callback fails (Enter to wait)")]);
-  if (!code) code = await server.wait();
+  // Do NOT prompt while the callback server is waiting. A live readline question cannot be
+  // cancelled cleanly when the browser callback wins, which leaves the TUI looking "stuck".
+  let code = await Promise.race([server.wait(), sleep(120_000).then(() => "")]);
+  if (!code) code = await ask("Paste authorization code/full redirect URL if browser callback failed");
   server.close();
   code = parseCode(code);
   if (!code) throw new Error("Missing authorization code");
