@@ -32,6 +32,19 @@ function showModelSuggestions(prefix = "") {
   return list.map((m) => `  ${c.bold(m)}`).join("\n") + "\n";
 }
 
+function resolveCommand(raw) {
+  const full = raw.startsWith("/") ? raw : `/${raw}`;
+  if (COMMANDS.includes(full)) return full.slice(1);
+  const hits = COMMANDS.filter((cmd) => cmd.startsWith(full));
+  return hits.length === 1 ? hits[0].slice(1) : "";
+}
+
+function resolveModel(raw) {
+  if (MODELS.includes(raw)) return raw;
+  const hits = MODELS.filter((m) => m.startsWith(raw));
+  return hits.length === 1 ? hits[0] : "";
+}
+
 function complete(line) {
   const s = String(line || "");
   if (!s.startsWith("/")) return [[], s];
@@ -121,6 +134,7 @@ ${c.bold("Commands:")}
   /exit            quit
 
   Tab              autocomplete slash commands and model ids
+  Prefixes work   e.g. /lo = /login, /wh = /whoami when unique
   Ctrl-C           interrupt the running turn (press again when idle to quit)
 `;
 
@@ -220,17 +234,23 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     if (!input) continue;
 
     if (input.startsWith("/")) {
-      const [cmd, ...rest] = input.slice(1).split(/\s+/);
-      if (cmd === "exit" || cmd === "quit") break;
+      const [cmdRaw, ...rest] = input.slice(1).split(/\s+/);
+      const cmd = cmdRaw === "quit" ? "exit" : resolveCommand(cmdRaw);
+      if (!cmd) {
+        process.stdout.write(c.dim("  suggestions:\n") + showCommandSuggestions(`/${cmdRaw}`));
+        continue;
+      }
+      if (cmd === "exit") break;
       else if (cmd === "help") process.stdout.write(HELP + "\n");
       else if (cmd === "login") await tuiLogin(rest[0], ask);
       else if (cmd === "use") await tuiUse(rest[0], rest[1], ask);
       else if (cmd === "models") process.stdout.write("  " + MODELS.join("\n  ") + "\n");
       else if (cmd === "whoami") process.stdout.write(`  provider: ${PROVIDER}\n  model: ${agent.model}\n  note: use \`tawx login\` or \`tawx use\` outside TUI to switch provider persistently\n`);
       else if (cmd === "model") {
+        const picked = rest[0] ? resolveModel(rest[0]) : "";
         if (!rest[0]) process.stdout.write(c.dim("  choose a model:\n") + showModelSuggestions());
-        else if (!MODELS.includes(rest[0])) process.stdout.write(c.yellow(`  model not in known list: ${rest[0]}\n`) + c.dim("  suggestions:\n") + showModelSuggestions(rest[0]));
-        else { agent.setModel(rest[0]); process.stdout.write(c.dim(`  model → ${rest[0]} (this session)\n`)); }
+        else if (!picked) process.stdout.write(c.yellow(`  model not unique/known: ${rest[0]}\n`) + c.dim("  suggestions:\n") + showModelSuggestions(rest[0]));
+        else { agent.setModel(picked); process.stdout.write(c.dim(`  model → ${picked} (this session)\n`)); }
       }
       else if (cmd === "yolo") { autoApprove = true; process.stdout.write(c.yellow("  YOLO: auto-approving every action\n")); }
       else if (cmd === "safe") { autoApprove = false; process.stdout.write(c.dim("  SAFE: ask before write/edit/bash\n")); }
