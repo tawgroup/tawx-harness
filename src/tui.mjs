@@ -171,15 +171,6 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         case "tool_denied":
           process.stdout.write(c.red("    ✗ denied\n"));
           break;
-        case "todos": {
-          const sym = { pending: c.dim("○"), in_progress: c.yellow("◐"), completed: c.green("●") };
-          const out = ev.todos
-            .map((t) => "    " + (sym[t.status] || c.dim("○")) + " " +
-              (t.status === "completed" ? c.dim(t.content) : t.status === "in_progress" ? c.bold(t.content) : t.content))
-            .join("\n");
-          process.stdout.write(c.cyan("  ☑ plan\n") + out + "\n");
-          break;
-        }
         case "usage":
           if (ev.usage?.total_tokens) {
             const secs = turnStart ? `, ${((Date.now() - turnStart) / 1000).toFixed(1)}s` : "";
