@@ -5,6 +5,28 @@ import { c, banner, renderMarkdown, createMdStream } from "./ui.mjs";
 import { MODELS, DEFAULT_MODEL, PROVIDER } from "./config.mjs";
 
 const COMMANDS = ["/help", "/model", "/models", "/whoami", "/yolo", "/safe", "/clear", "/exit"];
+const COMMAND_DESC = {
+  "/help": "show help",
+  "/model": "switch model for this TUI session",
+  "/models": "list models for active provider",
+  "/whoami": "show active provider/model",
+  "/yolo": "auto-approve write/edit/bash",
+  "/safe": "ask before write/edit/bash",
+  "/clear": "clear conversation history",
+  "/exit": "quit",
+};
+
+function showCommandSuggestions(prefix = "/") {
+  const hits = COMMANDS.filter((cmd) => cmd.startsWith(prefix));
+  const list = hits.length ? hits : COMMANDS;
+  return list.map((cmd) => `  ${c.bold(cmd)} ${c.dim("— " + COMMAND_DESC[cmd])}`).join("\n") + "\n";
+}
+
+function showModelSuggestions(prefix = "") {
+  const hits = MODELS.filter((m) => m.startsWith(prefix));
+  const list = hits.length ? hits : MODELS;
+  return list.map((m) => `  ${c.bold(m)}`).join("\n") + "\n";
+}
 
 function complete(line) {
   const s = String(line || "");
@@ -146,11 +168,15 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       else if (cmd === "help") process.stdout.write(HELP + "\n");
       else if (cmd === "models") process.stdout.write("  " + MODELS.join("\n  ") + "\n");
       else if (cmd === "whoami") process.stdout.write(`  provider: ${PROVIDER}\n  model: ${agent.model}\n  note: use \`tawx login\` or \`tawx use\` outside TUI to switch provider persistently\n`);
-      else if (cmd === "model") { if (rest[0]) { agent.setModel(rest[0]); process.stdout.write(c.dim(`  model → ${rest[0]} (this session)\n`)); } }
+      else if (cmd === "model") {
+        if (!rest[0]) process.stdout.write(c.dim("  choose a model:\n") + showModelSuggestions());
+        else if (!MODELS.includes(rest[0])) process.stdout.write(c.yellow(`  model not in known list: ${rest[0]}\n`) + c.dim("  suggestions:\n") + showModelSuggestions(rest[0]));
+        else { agent.setModel(rest[0]); process.stdout.write(c.dim(`  model → ${rest[0]} (this session)\n`)); }
+      }
       else if (cmd === "yolo") { autoApprove = true; process.stdout.write(c.yellow("  YOLO: auto-approving every action\n")); }
       else if (cmd === "safe") { autoApprove = false; process.stdout.write(c.dim("  SAFE: ask before write/edit/bash\n")); }
       else if (cmd === "clear") { agent.reset(); process.stdout.write(c.dim("  history cleared\n")); }
-      else process.stdout.write(c.red(`  unknown command: /${cmd}\n`));
+      else process.stdout.write(c.dim("  suggestions:\n") + showCommandSuggestions(input));
       continue;
     }
 
