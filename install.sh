@@ -53,13 +53,10 @@ else
   esac
 fi
 
-# 4. Env / key
+# 4. Config dir. Model + provider are stored per-provider in ~/.taw/auth.json
+# (set via `tawx login` / `/model` in the TUI), so we DON'T pin a model in .env —
+# a hard-coded TAW_MODEL would override the saved choice and break other providers.
 mkdir -p "$HOME/.taw" && chmod 700 "$HOME/.taw"
-if [ ! -f "$HOME/.taw/.env" ]; then
-  printf 'OPENCODE_API_KEY=\nTAW_MODEL=glm-5\n' > "$HOME/.taw/.env"
-  chmod 600 "$HOME/.taw/.env"
-  echo "→ Created ~/.taw/.env — add your OpenCode Go key:  OPENCODE_API_KEY=sk-..."
-fi
 
 echo ""
 echo "✓ Done. Try:  tawx --help    (or just: tawx)"

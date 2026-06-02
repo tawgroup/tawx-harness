@@ -2,6 +2,47 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
+
+const PKG_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+// Local installed version (from package.json). Source of truth for update checks.
+export const VERSION = (() => {
+  try { return JSON.parse(fs.readFileSync(path.join(PKG_DIR, "package.json"), "utf8")).version || "0.0.0"; }
+  catch { return "0.0.0"; }
+})();
+
+// Repo on GitHub — used by the install one-liner and the update check.
+export const REPO_RAW = "https://raw.githubusercontent.com/tawgroup/tawx-harness/main";
+export const UPDATE_CMD = `curl -fsSL ${REPO_RAW}/install.sh | bash`;
+
+// a > b for dotted numeric versions ("0.2.0" > "0.1.9"). Non-numeric parts → 0.
+export function versionGt(a, b) {
+  const pa = String(a).split("."), pb = String(b).split(".");
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = parseInt(pa[i], 10) || 0, y = parseInt(pb[i], 10) || 0;
+    if (x > y) return true;
+    if (x < y) return false;
+  }
+  return false;
+}
+
+// Fetch the latest published version from the repo's package.json. Returns the
+// version string if it is NEWER than the local one, else null (also null on any
+// network/parse failure or offline — the caller stays silent).
+export async function checkForUpdate(timeoutMs = 1500) {
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    const res = await fetch(`${REPO_RAW}/package.json`, { signal: ctl.signal, cache: "no-store" });
+    clearTimeout(t);
+    if (!res.ok) return null;
+    const latest = (await res.json())?.version;
+    return latest && versionGt(latest, VERSION) ? latest : null;
+  } catch {
+    return null;
+  }
+}
 
 export const TAW_DIR = path.join(os.homedir(), ".taw");
 export const AUTH_PATH = path.join(TAW_DIR, "auth.json");

@@ -3,7 +3,7 @@ import readline from "node:readline";
 import { spawnSync } from "node:child_process";
 import { createAgent } from "./agent.mjs";
 import { c, banner, renderMarkdown, createMdStream } from "./ui.mjs";
-import { MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, AUTH_PATH, saveAuth } from "./config.mjs";
+import { MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, AUTH_PATH, saveAuth, VERSION, checkForUpdate, UPDATE_CMD } from "./config.mjs";
 import { listModels } from "./provider.mjs";
 import { loginCodexBrowser, loginCodexDeviceCode } from "./codex-oauth.mjs";
 
@@ -184,6 +184,10 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   // Non-blocking: the hardcoded seed is already usable; this just freshens it.
   listModels().then((ids) => { if (ids?.length) modelList = ids; }).catch(() => {});
 
+  // Kick off the update check now so it usually resolves "for free" before the
+  // banner/agent setup finishes; we await it (bounded) below before the prompt.
+  const updateCheck = checkForUpdate();
+
   const inputHist = [];   // our own recall list for ↑/↓ when no dropdown is up
 
   // Main prompt with live, as-you-type slash-command suggestions drawn below the
@@ -352,7 +356,16 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     }
   });
 
-  process.stdout.write(banner(`${agent.model} · ${PROVIDER} · yolo`));
+  process.stdout.write(banner(`${agent.model} · ${PROVIDER} · yolo`, VERSION));
+
+  // Show an update notice (bounded wait so it never lands mid-input and corrupts
+  // the prompt line). Silent when up to date / offline.
+  const latest = await Promise.race([updateCheck, new Promise((r) => setTimeout(() => r(null), 1500))]);
+  if (latest) {
+    process.stdout.write(
+      c.yellow(`  ⚑ update available: v${VERSION} → v${latest}\n`) + c.dim(`    ${UPDATE_CMD}\n\n`),
+    );
+  }
 
   for (;;) {
     const input = (await askMain(c.magenta("› "))).trim();

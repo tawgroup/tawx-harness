@@ -17,11 +17,12 @@ export const c = {
   inverse: wrap(7, 27),
 };
 
-export function banner(model) {
+export function banner(model, version) {
   const line = c.dim("─".repeat(48));
   return (
     "\n" +
     c.bold(c.magenta("  ▟▙ tawx")) +
+    (version ? c.dim(` v${version}`) : "") +
     c.dim("  · minimal coding agent harness") +
     "\n" +
     line +

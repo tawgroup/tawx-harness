@@ -5,7 +5,7 @@ import fs from "node:fs";
 import readline from "node:readline";
 import { createAgent } from "../src/agent.mjs";
 import { runTui } from "../src/tui.mjs";
-import { assertKey, MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, saveAuth, AUTH_PATH } from "../src/config.mjs";
+import { assertKey, MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, saveAuth, AUTH_PATH, VERSION, checkForUpdate, UPDATE_CMD } from "../src/config.mjs";
 import { c } from "../src/ui.mjs";
 import { loginCodexBrowser, loginCodexDeviceCode } from "../src/codex-oauth.mjs";
 
@@ -117,6 +117,7 @@ Usage:
   tawx use <provider>          switch active provider/model without changing key
   tawx whoami                  show active provider
   tawx models                  list models for the active provider
+  tawx --version               show version + check for updates
   tawx --help
 
 Options:
@@ -141,6 +142,13 @@ Env:
 async function main() {
   const cmd = argv[0];
 
+  if (hasFlag("--version") || hasFlag("-v") || cmd === "version") {
+    process.stdout.write(`tawx v${VERSION}\n`);
+    const latest = await checkForUpdate(2500);
+    if (latest) process.stdout.write(c.yellow(`update available → v${latest}\n`) + c.dim(`  ${UPDATE_CMD}\n`));
+    else process.stdout.write(c.dim("up to date\n"));
+    return;
+  }
   if (hasFlag("--help") || hasFlag("-h") || cmd === "help") {
     process.stdout.write(HELP);
     return;
