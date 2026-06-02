@@ -76,8 +76,8 @@ export const PROVIDERS = {
     label: "ChatGPT Plus/Pro (Codex Subscription)",
     baseUrl: "https://chatgpt.com/backend-api",
     keyEnv: "OPENAI_CODEX_ACCESS_TOKEN",
-    defaultModel: "gpt-5.1-codex",
-    models: ["gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5-codex"],
+    defaultModel: "gpt-5.5",
+    models: ["gpt-5.5", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.2-codex", "gpt-5.1-codex", "gpt-5.1-codex-mini", "gpt-5-codex"],
   },
   claude: {
     type: "anthropic",
