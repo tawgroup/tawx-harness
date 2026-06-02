@@ -110,8 +110,8 @@ ${c.bold("Commands:")}
   /model <id>      switch model for this TUI session (e.g. /model qwen3.6-plus)
   /models          list models for active provider
   /whoami          show active provider/model
-  /yolo            auto-approve every action (write/edit/bash)
-  /safe            turn off auto-approve (default)
+  /yolo            auto-approve every action (default)
+  /safe            ask before write/edit/bash
   /clear           clear conversation history
   /exit            quit
 
@@ -123,7 +123,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer: complete });
   const ask = (q) => new Promise((r) => rl.question(q, r));
 
-  let autoApprove = false;
+  let autoApprove = true;
   let spin = null;
   let turnStart = 0;        // wall-clock of the current model turn
   let mdStream = null;      // streaming markdown renderer for the current assistant message
@@ -217,7 +217,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     }
   });
 
-  process.stdout.write(banner(`${agent.model} · ${PROVIDER}`));
+  process.stdout.write(banner(`${agent.model} · ${PROVIDER} · yolo`));
 
   for (;;) {
     const input = (await ask(c.magenta("› "))).trim();
