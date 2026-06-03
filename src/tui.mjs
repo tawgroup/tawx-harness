@@ -217,6 +217,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
           process.stdout.write(rows.join("\n"));
         }
         process.stdout.write("\x1b8");      // restore cursor back to the input
+        drawFooter();                       // \x1b[J above wiped it — repaint
       };
 
       let pending = false;
@@ -302,6 +303,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         process.stdin.removeListener("keypress", onKey);
         rl.removeListener("line", onLine);
         process.stdout.write("\x1b[J");     // wipe the suggestion block beneath the input
+        drawFooter();                       // \x1b[J wiped the footer — repaint
         const picked = sel >= 0 && items[sel] ? items[sel].value : line;
         const trimmed = picked.trim();
         if (trimmed && inputHist[inputHist.length - 1] !== trimmed) inputHist.push(trimmed);
@@ -322,23 +324,55 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   let lastSecs = 0;         // last response time
   let totalCost = 0;        // cumulative cost this session
 
-  // A compact PI-style status line printed just above each prompt — so as the
-  // chat scrolls, the key info (where you are, model, context use) stays in view.
+  // PI-style status bar PINNED to the bottom row via a scroll region (DECSTBM):
+  // chat output scrolls in rows 1..rows-1, the last row stays fixed as the footer.
   const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n));
-  const statusLine = () => {
+  const footerOn = () => !!(process.stdout.isTTY && process.stdout.rows);
+
+  // Build the footer as {plain,col} segments so we can fit it to the width.
+  const statusSegs = () => {
     const home = os.homedir();
     let dir = process.cwd();
     if (dir === home) dir = "~"; else if (dir.startsWith(home + "/")) dir = "~" + dir.slice(home.length);
-    const sep = c.dim(" · ");
-    const parts = [c.cyan(dir), c.dim(`${agent.model} · ${PROVIDER}`), autoApprove ? c.yellow("yolo") : c.dim("safe")];
+    const segs = [
+      { plain: dir, col: c.cyan(dir) },
+      { plain: `${agent.model} · ${PROVIDER}`, col: c.dim(`${agent.model} · ${PROVIDER}`) },
+      { plain: autoApprove ? "yolo" : "safe", col: autoApprove ? c.yellow("yolo") : c.dim("safe") },
+    ];
     if (lastTokens) {
       const pct = Math.round((lastTokens / COMPACT_THRESHOLD) * 100);
-      const ctx = `ctx ${fmtK(lastTokens)}/${fmtK(COMPACT_THRESHOLD)} `;
-      parts.push(c.dim(ctx) + (pct >= 80 ? c.yellow(pct + "%") : c.dim(pct + "%")));
+      segs.push({ plain: `ctx ${fmtK(lastTokens)}/${fmtK(COMPACT_THRESHOLD)} ${pct}%`,
+        col: c.dim(`ctx ${fmtK(lastTokens)}/${fmtK(COMPACT_THRESHOLD)} `) + (pct >= 80 ? c.yellow(`${pct}%`) : c.dim(`${pct}%`)) });
     }
-    if (lastSecs) parts.push(c.dim(`${lastSecs.toFixed(1)}s`));
-    if (totalCost > 0) parts.push(c.dim(`$${totalCost.toFixed(3)}`));
-    return "  " + parts.join(sep);
+    if (lastSecs) segs.push({ plain: `${lastSecs.toFixed(1)}s`, col: c.dim(`${lastSecs.toFixed(1)}s`) });
+    if (totalCost > 0) segs.push({ plain: `$${totalCost.toFixed(3)}`, col: c.dim(`$${totalCost.toFixed(3)}`) });
+    return segs;
+  };
+  const statusLine = (maxCols) => {
+    let segs = statusSegs();
+    const width = () => segs.reduce((n, s, i) => n + s.plain.length + (i ? 3 : 0), 2);
+    if (maxCols) {
+      if (width() > maxCols) { const b = segs[0].plain.split("/").pop() || segs[0].plain; segs[0] = { plain: b, col: c.cyan(b) }; }
+      while (segs.length > 3 && width() > maxCols) segs.pop();
+    }
+    return "  " + segs.map((s) => s.col).join(c.dim(" · "));
+  };
+
+  const drawFooter = () => {
+    if (!footerOn()) return;
+    const rows = process.stdout.rows;
+    process.stdout.write(`\x1b7\x1b[${rows};1H\x1b[2K${statusLine((process.stdout.columns || 80) - 1)}\x1b8`);
+  };
+  const setupFooter = () => {
+    if (!footerOn()) return;
+    const rows = process.stdout.rows;
+    process.stdout.write(`\x1b7\x1b[1;${rows - 1}r\x1b8`); // reserve bottom row (keep cursor)
+    drawFooter();
+  };
+  const teardownFooter = () => {
+    if (!footerOn()) return;
+    const rows = process.stdout.rows;
+    process.stdout.write(`\x1b[r\x1b[${rows};1H\x1b[2K`); // release region + clear footer line
   };
   const stopSpin = () => {
     if (spin) { clearInterval(spin); spin = null; process.stdout.write("\r\x1b[2K"); }
@@ -386,6 +420,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
             if (ev.cost != null) totalCost += Number(ev.cost) || 0;
             const secs = lastSecs ? `, ${lastSecs.toFixed(1)}s` : "";
             process.stdout.write(c.gray(`    · ${ev.usage.total_tokens} tok` + (ev.cost != null ? `, cost ${ev.cost}` : "") + secs) + "\n");
+            drawFooter();
           }
           break;
         case "max_steps":
@@ -418,6 +453,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       if (mdStream) { mdStream.end(); mdStream = null; }
       process.stdout.write(c.yellow("\n  ⎋ interrupting…\n"));
     } else {
+      teardownFooter();
       process.stdout.write("\x1b[?2004l"); // disable bracketed paste
       rl.close();
       process.stdout.write(c.dim("\nbye 👋\n"));
@@ -437,8 +473,12 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     );
   }
 
+  setupFooter();
+  process.stdout.on("resize", setupFooter); // re-reserve the bottom row on terminal resize
+  process.on("exit", () => { try { teardownFooter(); } catch { /* ignore */ } }); // never leave a reserved row behind
+
   for (;;) {
-    process.stdout.write(statusLine() + "\n");
+    drawFooter(); // refresh (mode/cwd may have changed) before prompting
     const input = (await askMain(c.magenta("› "))).trim();
     if (!input) continue;
 
@@ -496,6 +536,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       aborter = null;
     }
   }
+  teardownFooter();
   process.stdout.write("\x1b[?2004l"); // disable bracketed paste
   rl.close();
   process.stdout.write(c.dim("bye 👋\n"));

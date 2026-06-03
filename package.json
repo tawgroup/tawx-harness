@@ -1,6 +1,6 @@
 {
   "name": "tawx-harness",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Tiny PI-inspired coding agent harness with just simple tools and configurable OpenAI-compatible provider support. Zero dependencies, runs on Node 20+ or Bun.",
   "type": "module",
   "bin": {
