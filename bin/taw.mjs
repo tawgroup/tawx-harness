@@ -2,10 +2,11 @@
 // tawx-harness CLI entry. Modes: TUI (default), headless run, self-verify build, models, help.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import readline from "node:readline";
 import { createAgent } from "../src/agent.mjs";
 import { runTui } from "../src/tui.mjs";
-import { assertKey, MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, saveAuth, AUTH_PATH, VERSION, checkForUpdate, UPDATE_CMD } from "../src/config.mjs";
+import { assertKey, MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, saveAuth, AUTH_PATH, VERSION, checkForUpdate, UPDATE_CMD, TAW_DIR } from "../src/config.mjs";
 import { c } from "../src/ui.mjs";
 import { loginCodexBrowser, loginCodexDeviceCode } from "../src/codex-oauth.mjs";
 
@@ -117,6 +118,7 @@ Usage:
   tawx use <provider>          switch active provider/model without changing key
   tawx whoami                  show active provider
   tawx models                  list models for the active provider
+  tawx sessions                list saved conversations (~/.taw/sessions)
   tawx --version               show version + check for updates
   tawx --help
 
@@ -167,6 +169,25 @@ async function main() {
   }
   if (cmd === "models") {
     process.stdout.write(MODELS.join("\n") + "\n");
+    return;
+  }
+  if (cmd === "sessions") {
+    const dir = path.join(TAW_DIR, "sessions");
+    let files = [];
+    try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")); } catch { /* none */ }
+    if (!files.length) { process.stdout.write("No saved sessions yet.\n"); return; }
+    const rows = files.map((f) => {
+      try {
+        const s = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+        const firstUser = (s.messages || []).find((m) => m.role === "user");
+        const text = typeof firstUser?.content === "string" ? firstUser.content : "(…)";
+        return { id: s.id || f.replace(/\.json$/, ""), updated: s.updated || "", model: s.model || "", n: (s.messages || []).length, snippet: text.replace(/\s+/g, " ").slice(0, 60) };
+      } catch { return null; }
+    }).filter(Boolean).sort((a, b) => (a.updated < b.updated ? 1 : -1));
+    for (const r of rows) {
+      process.stdout.write(`${c.bold(r.id)}  ${c.dim(r.updated.slice(0, 16).replace("T", " "))}  ${c.dim(r.model)}  ${c.dim(`${r.n} msgs`)}\n  ${c.dim(r.snippet)}\n`);
+    }
+    process.stdout.write(c.dim(`\n${rows.length} sessions in ${dir}\n`));
     return;
   }
 

@@ -1,10 +1,12 @@
 // Interactive terminal UI (readline + ANSI). Chat-style, with streaming, tool rendering + approval.
 import readline from "node:readline";
 import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createAgent } from "./agent.mjs";
 import { c, banner, renderMarkdown, createMdStream } from "./ui.mjs";
-import { MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, AUTH_PATH, saveAuth, VERSION, checkForUpdate, UPDATE_CMD, contextWindowFor } from "./config.mjs";
+import { MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, AUTH_PATH, saveAuth, VERSION, checkForUpdate, UPDATE_CMD, contextWindowFor, TAW_DIR } from "./config.mjs";
 import { listModels } from "./provider.mjs";
 import { saveClipboardImage } from "./clipboard.mjs";
 import { loginCodexBrowser, loginCodexDeviceCode } from "./codex-oauth.mjs";
@@ -206,6 +208,9 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       let pasting = false;   // inside a bracketed paste (ESC[200~ … ESC[201~)
       let pasteParts = [];   // lines captured while pasting (readline submits each \n)
       let realWrite = null;  // saved process.stdout.write while we mute echo during a paste
+      let pastePrefix = "";  // text already in the buffer when the paste started
+      const pasteStore = new Map(); // id -> full pasted text (kept out of the visible line)
+      let pasteSeq = 0;
 
       // Render the area BELOW the input on every keystroke: optional suggestion
       // dropdown, then the status footer as the last line — so the footer always
@@ -242,7 +247,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         // collect the pieces, and rebuild them into ONE input on paste-end —
         // a multi-line paste must NOT submit until the user hits Enter for real.
         if (name === "paste-start") {
-          pasting = true; pasteParts = [];
+          pasting = true; pasteParts = []; pastePrefix = rl.line;
           realWrite = process.stdout.write.bind(process.stdout);
           process.stdout.write = (chunk, enc, cb) => { const f = typeof enc === "function" ? enc : cb; if (typeof f === "function") f(); return true; };
           return;
@@ -250,11 +255,21 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         if (name === "paste-end") {
           pasting = false;
           if (realWrite) { process.stdout.write = realWrite; realWrite = null; }
-          // join captured lines + the trailing segment still in the buffer;
-          // collapse whitespace so it stays one editable line (newlines → space).
-          const full = [...pasteParts, rl.line].join(" ").replace(/[ \t]*\n[ \t]*/g, " ").replace(/\s+/g, " ").trim();
+          // The buffer now holds: pastePrefix + last paste segment. Earlier segments
+          // are in pasteParts. Reconstruct the pasted blob (newlines preserved).
+          let tail = rl.line;
+          if (pastePrefix && tail.startsWith(pastePrefix)) tail = tail.slice(pastePrefix.length);
+          const blob = [...pasteParts, tail].join("\n").trim();
           pasteParts = [];
-          setLine(full);
+          // Big / multi-line paste → keep it OUT of the visible line; show a chip.
+          // The real text is restored on submit (see onLine). Short paste stays inline.
+          if (blob.length > 200 || blob.includes("\n")) {
+            const id = ++pasteSeq;
+            pasteStore.set(id, blob);
+            setLine(pastePrefix + `[pasted ${blob.length} chars #${id}] `);
+          } else {
+            setLine(pastePrefix + blob + " ");
+          }
           if (!pending) { pending = true; setImmediate(recompute); }
           return;
         }
@@ -306,7 +321,9 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         process.stdin.removeListener("keypress", onKey);
         rl.removeListener("line", onLine);
         process.stdout.write("\x1b[J");     // wipe the suggestion+footer block beneath the input
-        const picked = sel >= 0 && items[sel] ? items[sel].value : line;
+        let picked = sel >= 0 && items[sel] ? items[sel].value : line;
+        // Expand any [pasted N chars #id] chips back into the real pasted text.
+        picked = picked.replace(/\[pasted \d+ chars #(\d+)\]/g, (m, id) => pasteStore.get(Number(id)) ?? m);
         const trimmed = picked.trim();
         if (trimmed && inputHist[inputHist.length - 1] !== trimmed) inputHist.push(trimmed);
         resolve(picked);
@@ -429,6 +446,29 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   });
   agent.setModel(model);
 
+  // Session log: each run gets an id and is saved to ~/.taw/sessions/<id>.json so
+  // you can review it later (see `tawx sessions`). Updated after every turn.
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "").replace(/-/g, "");
+  const sessionId = `${stamp}-${Math.floor(Math.random() * 1e4).toString().padStart(4, "0")}`;
+  const SESS_DIR = path.join(TAW_DIR, "sessions");
+  const sessionFile = path.join(SESS_DIR, `${sessionId}.json`);
+  const startedAt = new Date().toISOString();
+  // Drop heavy base64 image data when persisting (keep a marker so the log is readable + small).
+  const sanitize = (msgs) => msgs.map((m) => {
+    if (!Array.isArray(m.content)) return m;
+    return { ...m, content: m.content.map((p) => (p.type === "image" ? { type: "image", mime: p.mime, bytes: (p.data || "").length } : p)) };
+  });
+  const saveSession = () => {
+    try {
+      fs.mkdirSync(SESS_DIR, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(sessionFile, JSON.stringify({
+        id: sessionId, started: startedAt, updated: new Date().toISOString(),
+        model: agent.model, provider: PROVIDER, cwd: process.cwd(),
+        messages: sanitize(agent.messages),
+      }, null, 2));
+    } catch { /* never block the session on a save error */ }
+  };
+
   // Ctrl-C: cancel the in-flight turn (like Claude Code). Pressing it when idle exits.
   let aborter = null;
   rl.on("SIGINT", () => {
@@ -447,6 +487,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
 
   process.stdout.write("\x1b[?2004h"); // enable bracketed paste so multi-line pastes don't auto-submit
   process.stdout.write(banner(`${agent.model} · ${PROVIDER} · yolo`, VERSION));
+  process.stdout.write(c.dim(`  session ${sessionId}  ·  ~/.taw/sessions/${sessionId}.json\n`));
 
   // Show an update notice (bounded wait so it never lands mid-input and corrupts
   // the prompt line). Silent when up to date / offline.
@@ -514,6 +555,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     } finally {
       aborter = null;
     }
+    saveSession(); // persist the conversation after each turn
   }
   process.stdout.write("\x1b[?2004l"); // disable bracketed paste
   rl.close();
