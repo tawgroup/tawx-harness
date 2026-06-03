@@ -1,6 +1,7 @@
 // ANSI helpers for the TUI — zero deps.
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const wrap = (open, close) => (s) => (useColor ? `\x1b[${open}m${s}\x1b[${close}m` : String(s));
+const tc = (r, g, b) => (s) => (useColor ? `\x1b[38;2;${r};${g};${b}m${s}\x1b[39m` : String(s));
 
 export const c = {
   bold: wrap(1, 22),
@@ -15,24 +16,33 @@ export const c = {
   italic: wrap(3, 23),
   underline: wrap(4, 24),
   inverse: wrap(7, 27),
+  // ---- semantic roles (truecolor; degrade to plain when NO_COLOR) ----
+  accent: tc(167, 139, 250),  // lavender — brand, prompt, active
+  brand: tc(180, 160, 255),
+  soft: tc(125, 211, 252),    // soft cyan — assistant accents
+  amber: tc(245, 176, 84),    // warning/attention — YOLO
+  ok: tc(110, 215, 160),      // success/user
+  text: tc(228, 230, 240),    // near-white primary
+  muted: tc(132, 134, 158),   // secondary
+  faint: tc(92, 94, 116),     // tertiary / separators
 };
 
-export function banner(model, version) {
-  const line = c.dim("─".repeat(48));
-  return (
-    "\n" +
-    c.bold(c.magenta("  ▟▙ tawx")) +
-    (version ? c.dim(` v${version}`) : "") +
-    c.dim("  · minimal coding agent harness") +
-    "\n" +
-    line +
-    "\n" +
-    c.dim("  model: ") + c.cyan(model) +
-    c.dim("   ·  /help for commands  ·  /exit to quit") +
-    "\n" +
-    line +
-    "\n"
-  );
+// Visible length of a string, ignoring ANSI escape sequences.
+export const visLen = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, "").length;
+
+// Lay out a left and right segment on one line padded to `cols` wide.
+function justify(left, right, cols) {
+  const gap = Math.max(1, cols - visLen(left) - visLen(right));
+  return left + " ".repeat(gap) + right;
+}
+
+// Compact two-line header + a thin subtle rule.
+export function banner({ version = "", cwd = "", session = "", cols = 80 } = {}) {
+  const w = Math.min(cols || 80, 120);
+  const logo = "  " + c.bold(c.brand("◢◣ tawx")) + (version ? "  " + c.faint("v" + version) : "");
+  const right = (cwd ? c.muted(cwd) : "") + (session ? c.faint(`  ·  ${session}`) : "");
+  const rule = "  " + c.faint("─".repeat(Math.max(0, w - 4)));
+  return "\n" + justify(logo, right + "  ", w) + "\n" + rule + "\n";
 }
 
 // ---- Markdown → ANSI (zero-dep): headings, bold, italic, inline code, bullets, fences, links ----

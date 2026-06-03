@@ -223,7 +223,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         const out = [];
         if (items.length) {
           out.push(...items.slice(0, MAX_SUGGEST).map((it, i) =>
-            i === sel ? c.magenta("› ") + c.inverse(" " + it.label + " ") : "  " + it.label));
+            i === sel ? c.accent("❯ ") + c.inverse(" " + it.label + " ") : "  " + it.label));
         }
         out.push(statusLine((process.stdout.columns || 80) - 1)); // footer, always last
         process.stdout.write(out.join("\n"));
@@ -355,32 +355,49 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     let dir = process.cwd();
     if (dir === home) dir = "~"; else if (dir.startsWith(home + "/")) dir = "~" + dir.slice(home.length);
     const segs = [
-      { plain: dir, col: c.cyan(dir) },
-      { plain: `${agent.model} · ${PROVIDER}`, col: c.dim(`${agent.model} · ${PROVIDER}`) },
-      { plain: autoApprove ? "yolo" : "safe", col: autoApprove ? c.yellow("yolo") : c.dim("safe") },
+      { plain: dir, col: c.accent(dir) },
+      { plain: agent.model, col: c.soft(agent.model) },
+      { plain: PROVIDER, col: c.muted(PROVIDER) },
+      { plain: autoApprove ? "YOLO" : "safe", col: autoApprove ? c.amber("YOLO") : c.muted("safe") },
     ];
     if (lastTokens) {
       const win = contextWindowFor(agent.model);
       const pct = Math.round((lastTokens / win) * 100);
       segs.push({ plain: `ctx ${fmtK(lastTokens)}/${fmtK(win)} ${pct}%`,
-        col: c.dim(`ctx ${fmtK(lastTokens)}/${fmtK(win)} `) + (pct >= 80 ? c.yellow(`${pct}%`) : c.dim(`${pct}%`)) });
+        col: c.muted(`ctx ${fmtK(lastTokens)}/${fmtK(win)} `) + (pct >= 80 ? c.amber(`${pct}%`) : c.muted(`${pct}%`)) });
     }
-    if (lastSecs) segs.push({ plain: `${lastSecs.toFixed(1)}s`, col: c.dim(`${lastSecs.toFixed(1)}s`) });
-    if (totalCost > 0) segs.push({ plain: `$${totalCost.toFixed(3)}`, col: c.dim(`$${totalCost.toFixed(3)}`) });
+    if (lastSecs) segs.push({ plain: `${lastSecs.toFixed(1)}s`, col: c.muted(`${lastSecs.toFixed(1)}s`) });
+    if (totalCost > 0) segs.push({ plain: `$${totalCost.toFixed(3)}`, col: c.muted(`$${totalCost.toFixed(3)}`) });
+    segs.push({ plain: "/help", col: c.faint("/help") });
     return segs;
   };
   const statusLine = (maxCols) => {
     let segs = statusSegs();
     const width = () => segs.reduce((n, s, i) => n + s.plain.length + (i ? 3 : 0), 2);
     if (maxCols) {
-      if (width() > maxCols) { const b = segs[0].plain.split("/").pop() || segs[0].plain; segs[0] = { plain: b, col: c.cyan(b) }; }
+      if (width() > maxCols) { const b = segs[0].plain.split("/").pop() || segs[0].plain; segs[0] = { plain: b, col: c.accent(b) }; }
       while (segs.length > 3 && width() > maxCols) segs.pop();
     }
-    return "  " + segs.map((s) => s.col).join(c.dim(" · "));
+    return "  " + segs.map((s) => s.col).join(c.faint(" · "));
   };
 
   const stopSpin = () => {
     if (spin) { clearInterval(spin); spin = null; process.stdout.write("\r\x1b[2K"); }
+  };
+
+  // Writer that indents every line of streamed assistant output by 2 spaces, so
+  // the answer reads as an indented block under the "◆ tawx" label.
+  const indentWriter = () => {
+    let atStart = true;
+    return (s) => {
+      let out = "";
+      for (const ch of s) {
+        if (atStart) { out += "  "; atStart = false; }
+        out += ch;
+        if (ch === "\n") atStart = true;
+      }
+      process.stdout.write(out);
+    };
   };
 
   const agent = createAgent({
@@ -392,49 +409,51 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         case "thinking": {
           turnStart = Date.now();
           const fr = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]; let i = 0;
-          spin = setInterval(() => process.stdout.write("\r" + c.magenta(fr[i++ % fr.length]) + c.dim(` ${ev.model} thinking…`) + "  "), 80);
+          spin = setInterval(() => process.stdout.write("\r  " + c.accent(fr[i++ % fr.length]) + c.muted(` ${ev.model} đang nghĩ…`) + "  "), 80);
           break;
         }
         case "assistant_delta":
           if (!mdStream) {
-            process.stdout.write(c.bold("⏺ "));
-            mdStream = createMdStream((s) => process.stdout.write(s));
+            process.stdout.write("\n  " + c.soft("◆") + " " + c.bold(c.soft("tawx")) + "\n");
+            mdStream = createMdStream(indentWriter());
           }
           mdStream.push(ev.text);
           break;
         case "assistant":
           if (mdStream) { mdStream.end(); mdStream = null; }
-          else process.stdout.write(c.bold("⏺ ") + renderMarkdown(ev.text.trim()) + "\n");
+          else if (ev.text?.trim()) {
+            const body = renderMarkdown(ev.text.trim()).replace(/\n/g, "\n  ");
+            process.stdout.write("\n  " + c.soft("◆") + " " + c.bold(c.soft("tawx")) + "\n  " + body + "\n");
+          }
           break;
         case "tool_call":
-          process.stdout.write(c.green("  ⚒ ") + c.bold(ev.name) + c.dim("  " + String(ev.preview).split("\n")[0].slice(0, 80)) + "\n");
+          process.stdout.write("    " + c.faint("⋮ ") + c.muted(ev.name) + c.faint("  " + String(ev.preview).split("\n")[0].slice(0, 76)) + "\n");
           break;
         case "tool_result": {
           const lines = String(ev.result).split("\n");
-          const head = lines.slice(0, 6).map((l) => c.dim("    │ " + l.slice(0, 100))).join("\n");
-          process.stdout.write(head + (lines.length > 6 ? c.dim(`\n    └ …(+${lines.length - 6} lines)`) : "") + "\n");
+          const head = lines.slice(0, 6).map((l) => c.faint("      " + l.slice(0, 100))).join("\n");
+          process.stdout.write(head + (lines.length > 6 ? c.faint(`\n      … +${lines.length - 6} lines`) : "") + "\n");
           break;
         }
         case "tool_denied":
-          process.stdout.write(c.red("    ✗ denied\n"));
+          process.stdout.write("    " + c.red("✗ denied") + "\n");
           break;
         case "usage":
           if (ev.usage?.total_tokens) {
             lastTokens = ev.usage.total_tokens;
             lastSecs = turnStart ? (Date.now() - turnStart) / 1000 : 0;
             if (ev.cost != null) totalCost += Number(ev.cost) || 0;
-            const secs = lastSecs ? `, ${lastSecs.toFixed(1)}s` : "";
-            process.stdout.write(c.gray(`    · ${ev.usage.total_tokens} tok` + (ev.cost != null ? `, cost ${ev.cost}` : "") + secs) + "\n");
+            // metadata lives in the footer now — no floating dim line per turn.
           }
           break;
         case "max_steps":
-          process.stdout.write(c.yellow("  ⚠ reached step limit\n"));
+          process.stdout.write("  " + c.amber("⚠ reached step limit") + "\n");
           break;
         case "compact_start":
-          process.stdout.write(c.dim(`  ♻ compacting context (~${ev.before} tok)…\n`));
+          process.stdout.write("  " + c.faint(`♻ compacting context (~${ev.before} tok)…`) + "\n");
           break;
         case "compact_done":
-          process.stdout.write(c.dim(`  ♻ compacted → ~${ev.after} tok\n`));
+          process.stdout.write("  " + c.faint(`♻ compacted → ~${ev.after} tok`) + "\n");
           break;
       }
     },
@@ -507,10 +526,10 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     const render = () => {
       process.stdout.write("\x1b7\n\x1b[J");
       const lines = rows.map((r, i) => {
-        const marker = r.id === leafId ? c.green("●") : c.dim("○");
+        const marker = r.id === leafId ? c.ok("●") : c.faint("○");
         const indent = "  ".repeat(r.depth);
         const label = i === sel ? c.inverse(" " + r.label + " ") : (r.id === leafId ? r.label : c.dim(r.label));
-        return (i === sel ? c.magenta("› ") : "  ") + indent + marker + " " + label;
+        return (i === sel ? c.accent("❯ ") : "  ") + indent + marker + " " + label;
       });
       process.stdout.write(lines.join("\n"));
       process.stdout.write("\x1b8");
@@ -547,8 +566,12 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   });
 
   process.stdout.write("\x1b[?2004h"); // enable bracketed paste so multi-line pastes don't auto-submit
-  process.stdout.write(banner(`${agent.model} · ${PROVIDER} · yolo`, VERSION));
-  process.stdout.write(c.dim(`  session ${sessionId}  ·  ~/.taw/sessions/${sessionId}.json\n`));
+  {
+    const home = os.homedir();
+    let proj = process.cwd();
+    if (proj === home) proj = "~"; else if (proj.startsWith(home + "/")) proj = "~" + proj.slice(home.length);
+    process.stdout.write(banner({ version: VERSION, cwd: proj, session: `session ${sessionId.slice(-4)}`, cols: process.stdout.columns || 80 }));
+  }
 
   // Show an update notice (bounded wait so it never lands mid-input and corrupts
   // the prompt line). Silent when up to date / offline.
@@ -560,7 +583,8 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   }
 
   for (;;) {
-    const input = (await askMain(c.magenta("› "))).trim();
+    process.stdout.write("\n"); // breathing room between turns
+    const input = (await askMain(c.accent("❯ "))).trim();
     if (!input) continue;
 
     // Treat as a slash command only if the first token is a single word — an
