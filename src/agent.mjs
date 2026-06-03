@@ -182,6 +182,12 @@ export function createAgent(opts = {}) {
     reset() {
       messages.length = 1; // keep system
     },
+    // Replace the live context (used by the conversation tree to rewind/branch).
+    // Keeps message[0] = the current system prompt regardless of what's passed.
+    setMessages(arr) {
+      const sys = messages[0];
+      messages.splice(0, messages.length, sys, ...arr.filter((m) => m.role !== "system"));
+    },
     messages,
   };
 }

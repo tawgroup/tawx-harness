@@ -16,9 +16,10 @@ import { loginCodexBrowser, loginCodexDeviceCode } from "./codex-oauth.mjs";
 // available (see refreshModels in runTui). All model UI reads from here.
 let modelList = [...MODELS];
 
-const COMMANDS = ["/help", "/login", "/use", "/model", "/models", "/whoami", "/yolo", "/safe", "/clear", "/exit"];
+const COMMANDS = ["/help", "/tree", "/login", "/use", "/model", "/models", "/whoami", "/yolo", "/safe", "/clear", "/exit"];
 const COMMAND_DESC = {
   "/help": "show help",
+  "/tree": "jump back / branch the conversation (keeps context clean)",
   "/login": "login provider inside TUI",
   "/use": "switch provider/model and restart TUI",
   "/model": "switch model for this TUI session",
@@ -160,6 +161,7 @@ async function tuiUse(providerName, modelArg, ask) {
 const HELP = `
 ${c.bold("Commands:")}
   /help            show help
+  /tree            jump back to / branch from an earlier turn (clean context)
   /login [name]    login provider in TUI: opencode | codex | claude
   /use <name>      switch provider in TUI and restart
   /model <id>      switch model for this TUI session (e.g. /model qwen3.6-plus)
@@ -469,6 +471,65 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     } catch { /* never block the session on a save error */ }
   };
 
+  // ---- Conversation tree (pi-style branching) ----
+  // Each completed turn becomes a node holding a full snapshot of the context at
+  // that point + parentId. Jumping to a node rewinds the live context to its
+  // snapshot (clean context); continuing from there forms a new branch, leaving
+  // the abandoned turns intact as siblings you can jump back to.
+  const tree = [];           // { id, parentId, snapshot, title, ts }
+  let leafId = null;         // current position in the tree
+  let nodeSeq = 0;
+  const recordTurn = (title) => {
+    const node = { id: (++nodeSeq).toString(36), parentId: leafId, snapshot: [...agent.messages], title: (title || "(turn)").replace(/\s+/g, " ").slice(0, 60), ts: Date.now() };
+    tree.push(node);
+    leafId = node.id;
+  };
+  const flattenTree = () => {
+    const kids = new Map();
+    for (const n of tree) { const k = n.parentId ?? "ROOT"; if (!kids.has(k)) kids.set(k, []); kids.get(k).push(n); }
+    const rows = [];
+    const walk = (key, depth) => { for (const n of kids.get(key) || []) { rows.push({ id: n.id, label: n.title, depth }); walk(n.id, depth + 1); } };
+    walk("ROOT", 0);
+    return rows;
+  };
+  const rewindTo = (id) => {
+    const node = tree.find((n) => n.id === id);
+    if (!node) return false;
+    agent.setMessages(node.snapshot);
+    leafId = id;
+    return true;
+  };
+  // Modal picker over the tree — ↑/↓ move, Enter jump, Esc cancel. Returns node id or null.
+  const selectFromTree = () => new Promise((resolve) => {
+    const rows = flattenTree();
+    if (!rows.length) { resolve(null); return; }
+    let sel = Math.max(0, rows.findIndex((r) => r.id === leafId));
+    const render = () => {
+      process.stdout.write("\x1b7\n\x1b[J");
+      const lines = rows.map((r, i) => {
+        const marker = r.id === leafId ? c.green("●") : c.dim("○");
+        const indent = "  ".repeat(r.depth);
+        const label = i === sel ? c.inverse(" " + r.label + " ") : (r.id === leafId ? r.label : c.dim(r.label));
+        return (i === sel ? c.magenta("› ") : "  ") + indent + marker + " " + label;
+      });
+      process.stdout.write(lines.join("\n"));
+      process.stdout.write("\x1b8");
+    };
+    const cleanup = () => { process.stdin.removeListener("keypress", onKey); rl.removeListener("line", onLine); process.stdout.write("\x1b[J"); };
+    const onKey = (_s, key) => {
+      if (!key) return;
+      if (key.name === "up") { sel = (sel - 1 + rows.length) % rows.length; render(); }
+      else if (key.name === "down") { sel = (sel + 1) % rows.length; render(); }
+      else if (key.name === "escape") { cleanup(); resolve(null); }
+    };
+    const onLine = () => { cleanup(); resolve(rows[sel]?.id ?? null); };
+    process.stdin.on("keypress", onKey);
+    rl.on("line", onLine);
+    rl.setPrompt(c.dim("  pick a point — ↑/↓ move · Enter jump · Esc cancel "));
+    rl.prompt();
+    render();
+  });
+
   // Ctrl-C: cancel the in-flight turn (like Claude Code). Pressing it when idle exits.
   let aborter = null;
   rl.on("SIGINT", () => {
@@ -539,7 +600,15 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       }
       else if (cmd === "yolo") { autoApprove = true; process.stdout.write(c.yellow("  YOLO: auto-approving every action\n")); }
       else if (cmd === "safe") { autoApprove = false; process.stdout.write(c.dim("  SAFE: ask before write/edit/bash\n")); }
-      else if (cmd === "clear") { agent.reset(); process.stdout.write(c.dim("  history cleared\n")); }
+      else if (cmd === "clear") { agent.reset(); tree.length = 0; leafId = null; process.stdout.write(c.dim("  history cleared\n")); }
+      else if (cmd === "tree") {
+        if (!tree.length) { process.stdout.write(c.dim("  no history yet — chat first, then /tree to jump back or branch\n")); continue; }
+        const id = await selectFromTree();
+        if (id && id !== leafId && rewindTo(id)) {
+          const t = tree.find((n) => n.id === id);
+          process.stdout.write(c.green("  ↩ jumped back") + c.dim(` — context rewound to: ${t?.title}\n  (keep chatting to start a new branch; /tree to go elsewhere)\n`));
+        } else process.stdout.write(c.dim("  (stayed here)\n"));
+      }
       else process.stdout.write(c.dim("  suggestions:\n") + showCommandSuggestions(input));
       continue;
     }
@@ -555,7 +624,8 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     } finally {
       aborter = null;
     }
-    saveSession(); // persist the conversation after each turn
+    recordTurn(input); // snapshot this turn into the conversation tree
+    saveSession();     // persist the conversation after each turn
   }
   process.stdout.write("\x1b[?2004l"); // disable bracketed paste
   rl.close();
