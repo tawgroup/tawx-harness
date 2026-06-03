@@ -176,7 +176,41 @@ ${c.bold("Commands:")}
   Ctrl-C           interrupt the running turn (press again when idle to quit)
 `;
 
+// Ask the terminal for its size directly (DSR cursor-position report). Needed for
+// terminals that don't expose process.stdout.rows until the first resize
+// (e.g. VibeTerminal). Must run BEFORE readline takes over stdin.
+async function queryTerminalSize() {
+  if (!process.stdout.isTTY || !process.stdin.isTTY || !process.stdin.setRawMode) return null;
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    let buf = "";
+    const done = (val) => {
+      clearTimeout(timer);
+      stdin.removeListener("data", onData);
+      try { stdin.setRawMode(false); } catch { /* ignore */ }
+      stdin.pause();
+      resolve(val);
+    };
+    const onData = (d) => {
+      buf += d.toString("latin1");
+      const m = buf.match(/\x1b\[(\d+);(\d+)R/);
+      if (m) done({ rows: Number(m[1]), cols: Number(m[2]) });
+    };
+    const timer = setTimeout(() => done(null), 400);
+    try { stdin.setRawMode(true); } catch { /* ignore */ }
+    stdin.resume();
+    stdin.on("data", onData);
+    // park cursor far bottom-right, report position (= size), then restore
+    process.stdout.write("\x1b7\x1b[9999;9999H\x1b[6n\x1b8");
+  });
+}
+
 export async function runTui({ model = DEFAULT_MODEL } = {}) {
+  // Probe the real terminal size before readline grabs stdin — but ONLY when the
+  // OS didn't give us one (some terminals report rows=0 until the first resize).
+  // Terminals that report size normally skip this and pay no startup latency.
+  const probed = process.stdout.rows ? null : await queryTerminalSize();
+
   // historySize:0 hands ↑/↓ to us — we drive the suggestion dropdown with them
   // (and fall back to our own input history when no dropdown is showing).
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer: complete, historySize: 0 });
@@ -327,7 +361,11 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   // PI-style status bar PINNED to the bottom row via a scroll region (DECSTBM):
   // chat output scrolls in rows 1..rows-1, the last row stays fixed as the footer.
   const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n));
-  const footerOn = () => !!(process.stdout.isTTY && process.stdout.rows);
+  // Prefer the live size; fall back to the size we probed before readline started.
+  const probedRows = probed?.rows || 0, probedCols = probed?.cols || 0;
+  const getRows = () => process.stdout.rows || probedRows || 0;
+  const getCols = () => process.stdout.columns || probedCols || 80;
+  const footerOn = () => !!(process.stdout.isTTY && getRows());
 
   // Build the footer as {plain,col} segments so we can fit it to the width.
   const statusSegs = () => {
@@ -360,18 +398,18 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
 
   const drawFooter = () => {
     if (!footerOn()) return;
-    const rows = process.stdout.rows;
-    process.stdout.write(`\x1b7\x1b[${rows};1H\x1b[2K${statusLine((process.stdout.columns || 80) - 1)}\x1b8`);
+    const rows = getRows();
+    process.stdout.write(`\x1b7\x1b[${rows};1H\x1b[2K${statusLine(getCols() - 1)}\x1b8`);
   };
   const setupFooter = () => {
     if (!footerOn()) return;
-    const rows = process.stdout.rows;
+    const rows = getRows();
     process.stdout.write(`\x1b7\x1b[1;${rows - 1}r\x1b8`); // reserve bottom row (keep cursor)
     drawFooter();
   };
   const teardownFooter = () => {
     if (!footerOn()) return;
-    const rows = process.stdout.rows;
+    const rows = getRows();
     process.stdout.write(`\x1b[r\x1b[${rows};1H\x1b[2K`); // release region + clear footer line
   };
   // Some terminals (e.g. VibeTerminal) report their window size LATE — rows is 0
@@ -483,9 +521,13 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     );
   }
 
-  ensureFooter(); // draw now if size is known, else poll until the terminal reports it
   process.stdout.on("resize", () => { footerReady = true; setupFooter(); }); // re-reserve on resize
   process.on("exit", () => { try { teardownFooter(); } catch { /* ignore */ } }); // never leave a reserved row behind
+  // Nudge Node to re-read the winsize (pi's trick: SIGWINCH is lost while a
+  // terminal sets size late). Then draw — using the size we probed via DSR if
+  // the OS winsize is still 0.
+  try { if (process.platform !== "win32") process.kill(process.pid, "SIGWINCH"); } catch { /* ignore */ }
+  ensureFooter(); // draw now if size is known, else poll until the terminal reports it
 
   for (;;) {
     drawFooter(); // refresh (mode/cwd may have changed) before prompting
