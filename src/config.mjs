@@ -156,14 +156,53 @@ export const REQUEST_TIMEOUT_MS = Number(process.env.TAW_REQUEST_TIMEOUT || 1800
 
 // ---- Context window per model (tokens) — drives auto-compaction + footer % ----
 // pi-style: compact when used > window - reserve, keeping the last keepTokens.
+// These are the built-in DEFAULTS. Providers' /models endpoints don't expose a
+// context-length field, so there's nothing to fetch live — instead the numbers
+// live in an editable JSON at ~/.taw/context-windows.json that overrides (and is
+// checked before) these built-ins. Edit that file to tweak a window; no code
+// change / release needed.
 const CONTEXT_WINDOWS = [
   [/gpt-5|codex/i, 272000],
   [/claude|sonnet|opus|haiku/i, 200000],
   [/glm|kimi|qwen|deepseek|minimax|mimo|hy3/i, 200000], // opencode models
 ];
+
+export const CONTEXT_WINDOWS_PATH = path.join(TAW_DIR, "context-windows.json");
+
+// Load user overrides from ~/.taw/context-windows.json. Shape is a flat object
+// { "<regex source>": <tokens> } — keys are matched (case-insensitive) against
+// the model id in insertion order, BEFORE the built-ins, so the first match wins.
+// Keys starting with "_" (e.g. "_comment") are ignored. Seeds an editable example
+// file on first run so it's discoverable. Resolved once at startup.
+function loadContextOverrides() {
+  try {
+    if (!fs.existsSync(CONTEXT_WINDOWS_PATH)) {
+      const seed = {
+        _comment: "Override/add model→context-window (tokens). Key = regex matched (case-insensitive) against the model id; first match wins and these are checked BEFORE the built-in defaults. Edit freely — no code change needed. Env TAW_CONTEXT_WINDOW overrides everything.",
+        "gpt-5.5": 272000,
+      };
+      fs.mkdirSync(TAW_DIR, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(CONTEXT_WINDOWS_PATH, JSON.stringify(seed, null, 2) + "\n", { mode: 0o600 });
+    }
+    const obj = readJson(CONTEXT_WINDOWS_PATH);
+    const entries = [];
+    for (const [k, v] of Object.entries(obj)) {
+      if (k.startsWith("_")) continue;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      try { entries.push([new RegExp(k, "i"), n]); } catch { /* skip invalid regex key */ }
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+const CONTEXT_OVERRIDES = loadContextOverrides();
+
 export function contextWindowFor(model = "") {
   if (process.env.TAW_CONTEXT_WINDOW) return Number(process.env.TAW_CONTEXT_WINDOW);
-  for (const [re, n] of CONTEXT_WINDOWS) if (re.test(model)) return n;
+  for (const [re, n] of CONTEXT_OVERRIDES) if (re.test(model)) return n; // user file first
+  for (const [re, n] of CONTEXT_WINDOWS) if (re.test(model)) return n;   // then built-ins
   return 128000; // safe default
 }
 export const COMPACT_RESERVE = Number(process.env.TAW_COMPACT_RESERVE || 16384); // headroom kept free
