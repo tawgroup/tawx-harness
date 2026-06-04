@@ -1,6 +1,6 @@
 {
   "name": "tawx-harness",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "Tiny PI-inspired coding agent harness with just simple tools and configurable OpenAI-compatible provider support. Zero dependencies, runs on Node 20+ or Bun.",
   "type": "module",
   "bin": {
@@ -17,7 +17,15 @@
     "bin",
     "src"
   ],
-  "keywords": ["ai", "coding-agent", "harness", "opencode", "claude", "cli", "tui"],
+  "keywords": [
+    "ai",
+    "coding-agent",
+    "harness",
+    "opencode",
+    "claude",
+    "cli",
+    "tui"
+  ],
   "license": "MIT",
   "author": "tawgroup"
 }

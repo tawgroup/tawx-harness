@@ -104,6 +104,7 @@ function complete(line) {
 }
 
 function restartTui() {
+  process.stdout.write("\x1b[r"); // release any scroll region before handing the terminal to the child
   process.stdout.write(c.dim("\nrestarting tawx…\n"));
   spawnSync(process.execPath, [process.argv[1]], { stdio: "inherit" });
   process.exit(0);
@@ -214,10 +215,20 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       const pasteStore = new Map(); // id -> full pasted text (kept out of the visible line)
       let pasteSeq = 0;
 
-      // Render the area BELOW the input on every keystroke: optional suggestion
-      // dropdown, then the status footer as the last line — so the footer always
-      // sits right under the input box (pi-style), with no terminal-size guessing.
+      // Render the suggestion + footer chrome on every keystroke.
+      //  - LAYOUT mode: the composer is pinned to a fixed bottom row. readline has
+      //    already redrawn the input line (and wiped the footer below it via its
+      //    clearScreenDown), so we repaint the one-line hint + footer at their
+      //    fixed rows, then re-anchor the cursor back onto the composer.
+      //  - FALLBACK mode: old content-flow behaviour — dropdown + footer drawn
+      //    just below the input via save/restore-cursor.
       const draw = () => {
+        if (layoutOn) {
+          drawHint(items, sel);
+          drawFooter();
+          process.stdout.write(at(COMPOSER_ROW(), COMPOSER_PROMPT_W + (rl.cursor || 0) + 1));
+          return;
+        }
         process.stdout.write("\x1b7");      // save cursor (at the input position)
         process.stdout.write("\n\x1b[J");   // drop below input, clear everything beneath
         const out = [];
@@ -322,7 +333,14 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         if (pasting) { pasteParts.push(line); return; }
         process.stdin.removeListener("keypress", onKey);
         rl.removeListener("line", onLine);
-        process.stdout.write("\x1b[J");     // wipe the suggestion+footer block beneath the input
+        if (layoutOn) {
+          // Clear the composer + hint rows, then drop the cursor back to the
+          // transcript continue-point we saved on entry so output flows in-region.
+          process.stdout.write(at(HINT_ROW()) + "\x1b[2K" + at(COMPOSER_ROW()) + "\x1b[2K");
+          process.stdout.write("\x1b8");
+        } else {
+          process.stdout.write("\x1b[J");   // wipe the suggestion+footer block beneath the input
+        }
         let picked = sel >= 0 && items[sel] ? items[sel].value : line;
         // Expand any [pasted N chars #id] chips back into the real pasted text.
         picked = picked.replace(/\[pasted \d+ chars #(\d+)\]/g, (m, id) => pasteStore.get(Number(id)) ?? m);
@@ -333,7 +351,14 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
 
       process.stdin.on("keypress", onKey);
       rl.on("line", onLine);
-      rl.setPrompt(q);
+      if (layoutOn) {
+        // Pin the composer to its fixed row: save the transcript continue-point,
+        // move down to the composer row, and let readline render there.
+        process.stdout.write("\x1b7" + at(COMPOSER_ROW()) + "\x1b[2K");
+        rl.setPrompt(COMPOSER_PROMPT);
+      } else {
+        rl.setPrompt(q);
+      }
       rl.prompt();
       draw(); // show the footer immediately, under the fresh (empty) prompt
     });
@@ -443,7 +468,8 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
             lastTokens = ev.usage.total_tokens;
             lastSecs = turnStart ? (Date.now() - turnStart) / 1000 : 0;
             if (ev.cost != null) totalCost += Number(ev.cost) || 0;
-            // metadata lives in the footer now — no floating dim line per turn.
+            // metadata lives in the sticky footer — refresh it around the live cursor.
+            if (layoutOn) { process.stdout.write("\x1b7"); drawFooter(); process.stdout.write("\x1b8"); }
           }
           break;
         case "max_steps":
@@ -505,6 +531,67 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     return "";
   };
 
+  // ---- Fixed-viewport layout (pi-style chrome) ---------------------------
+  // The transcript scrolls inside a top region; the composer + status footer are
+  // pinned to the bottom rows as persistent chrome OUTSIDE that region, so they
+  // never float into the middle of a short chat. The bottom CHROME_H rows are,
+  // top→bottom: a divider, a one-line suggestion strip, the composer input, and
+  // the status footer. Everything degrades to the old content-flow rendering when
+  // stdout isn't a TTY or the terminal is too small to host the chrome.
+  const CHROME_H = 4;
+  const bigEnough = () => (process.stdout.rows || 0) >= 12 && (process.stdout.columns || 0) >= 40;
+  let layoutOn = !!process.stdout.isTTY && bigEnough();
+  const ROWS = () => process.stdout.rows || 24;
+  const COLS = () => process.stdout.columns || 80;
+  const REGION_BOTTOM = () => Math.max(2, ROWS() - CHROME_H);
+  const DIVIDER_ROW = () => ROWS() - 3;
+  const HINT_ROW = () => ROWS() - 2;
+  const COMPOSER_ROW = () => ROWS() - 1;
+  const FOOTER_ROW = () => ROWS();
+  const at = (row, col = 1) => `\x1b[${row};${col}H`;
+
+  // An accent gutter + chevron marks the composer as the active input surface —
+  // the "highlight" the redesign asks for, without fighting readline over a
+  // full-row background. COMPOSER_PROMPT_W is its visible width (for cursor math).
+  const COMPOSER_PROMPT = c.accent("▌ ❯ ");
+  const COMPOSER_PROMPT_W = 4;
+
+  const setRegion = () => { if (layoutOn) process.stdout.write(`\x1b[1;${REGION_BOTTOM()}r`); };
+  const resetRegion = () => process.stdout.write("\x1b[r"); // back to full-screen scrolling
+
+  // Truncate a string to `w` visible columns, preserving ANSI colour escapes.
+  const truncVisible = (s, w) => {
+    let out = "", vis = 0, i = 0;
+    while (i < s.length && vis < w) {
+      if (s[i] === "\x1b") { const m = s.slice(i).match(/^\x1b\[[0-9;]*m/); if (m) { out += m[0]; i += m[0].length; continue; } }
+      out += s[i]; vis++; i++;
+    }
+    return out;
+  };
+
+  const drawDivider = () => process.stdout.write(at(DIVIDER_ROW()) + "\x1b[2K" + c.faint("─".repeat(COLS())));
+  const drawFooter = () => process.stdout.write(at(FOOTER_ROW()) + "\x1b[2K" + statusLine(COLS() - 1));
+  // One-line suggestion strip (replaces the old multi-row dropdown — only one
+  // chrome row is reserved). Highlights the active item; blank when none.
+  const drawHint = (items = [], sel = -1) => {
+    let s = "";
+    if (items.length) {
+      const i = sel >= 0 ? sel : 0;
+      const list = items.slice(0, 6).map((it, k) => (k === i ? c.inverse(" " + it.value + " ") : c.dim(it.value))).join("  ");
+      s = truncVisible("  " + list + c.faint("   ↑↓ · → accept"), COLS() - 1);
+    }
+    process.stdout.write(at(HINT_ROW()) + "\x1b[2K" + s);
+  };
+  const drawComposerIdle = () => process.stdout.write(at(COMPOSER_ROW()) + "\x1b[2K" + c.faint("▌ ") + c.faint("type to chat · / for commands"));
+  // Repaint the whole bottom chrome around the LIVE cursor (used when idle / during
+  // output). Save+restore keeps the transcript continue-point untouched.
+  const drawChromeIdle = () => {
+    if (!layoutOn) return;
+    process.stdout.write("\x1b7");
+    drawDivider(); drawHint([], -1); drawComposerIdle(); drawFooter();
+    process.stdout.write("\x1b8");
+  };
+
   // ---- Conversation tree (pi-style branching) ----
   // Each TURN contributes two nodes so /tree shows both sides of the dialogue and
   // you can rewind to either: a "user" node (context up to & incl. your prompt —
@@ -559,12 +646,13 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     leafId = id;
     return true;
   };
-  // Re-render the chat view from the live (rewound) context: wipe the screen +
-  // scrollback so post-checkpoint turns disappear, reprint the banner, then replay
-  // user prompts and tawx replies up to the current checkpoint. Ends on a marker so
-  // it's clear you're standing at a branch point.
-  const renderTranscript = () => {
-    process.stdout.write("\x1b[3J\x1b[2J\x1b[H"); // clear screen + scrollback, home cursor
+  // Repaint the whole conversation from the live context. Clears the screen,
+  // reprints the banner + transcript (which flows inside the scroll region in
+  // layout mode), optionally ends on a "Rewound here" marker, and re-pins the
+  // bottom chrome. Used on rewind (/tree), resize, /clear and startup.
+  const renderConversation = (marker = false) => {
+    if (layoutOn) { resetRegion(); process.stdout.write("\x1b[2J\x1b[3J" + at(1)); setRegion(); }
+    else process.stdout.write("\x1b[3J\x1b[2J\x1b[H");
     printBanner();
     for (const m of agent.messages) {
       if (m.role === "user") {
@@ -582,8 +670,11 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         }
       }
     }
-    process.stdout.write("\n" + c.green("  ↪ Rewound here") + c.dim(" — keep typing to start a new branch · /tree to jump again") + "\n");
+    if (marker) process.stdout.write("\n" + c.green("  ↪ Rewound here") + c.dim(" — keep typing to start a new branch · /tree to jump again") + "\n");
+    drawChromeIdle();
   };
+  const renderTranscript = () => renderConversation(true);  // after a rewind
+  const repaint = () => renderConversation(false);          // after a resize / clear
   // Modal picker over the tree — ↑/↓ move, Enter jump, Esc cancel. Returns node id or null.
   const selectFromTree = () => new Promise((resolve) => {
     const rows = flattenTree();
@@ -617,6 +708,12 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     render();
   });
 
+  // Release the scroll region (and park the cursor at the bottom) so the user's
+  // shell isn't left with a constrained scrolling area after we exit.
+  const cleanupLayout = () => { if (layoutOn) { resetRegion(); process.stdout.write(at(ROWS())); } };
+  // Last-resort safety: always release the region on process exit.
+  process.on("exit", () => { try { process.stdout.write("\x1b[r"); } catch { /* noop */ } });
+
   // Ctrl-C: cancel the in-flight turn (like Claude Code). Pressing it when idle exits.
   let aborter = null;
   rl.on("SIGINT", () => {
@@ -626,6 +723,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       if (mdStream) { mdStream.end(); mdStream = null; }
       process.stdout.write(c.yellow("\n  ⎋ interrupting…\n"));
     } else {
+      cleanupLayout();
       process.stdout.write("\x1b[?2004l"); // disable bracketed paste
       rl.close();
       process.stdout.write(c.dim("\nbye 👋\n"));
@@ -633,7 +731,18 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     }
   });
 
+  // Keep the layout correct across terminal resizes: re-set the scroll region for
+  // the new size and repaint header + transcript + chrome. Toggles the fixed
+  // layout off if the terminal shrinks below the usable threshold.
+  if (process.stdout.isTTY) process.stdout.on("resize", () => {
+    const was = layoutOn;
+    layoutOn = !!process.stdout.isTTY && bigEnough();
+    if (!layoutOn) { if (was) resetRegion(); return; }
+    repaint();
+  });
+
   process.stdout.write("\x1b[?2004h"); // enable bracketed paste so multi-line pastes don't auto-submit
+  if (layoutOn) { process.stdout.write("\x1b[2J\x1b[3J" + at(1)); setRegion(); }
   printBanner();
 
   // Show an update notice (bounded wait so it never lands mid-input and corrupts
@@ -644,11 +753,15 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       c.yellow(`  ⚑ update available: v${VERSION} → v${latest}\n`) + c.dim(`    ${UPDATE_CMD}\n\n`),
     );
   }
+  drawChromeIdle(); // pin the composer + footer to the bottom before the first prompt
 
   for (;;) {
-    process.stdout.write("\n"); // breathing room between turns
+    if (!layoutOn) process.stdout.write("\n"); // breathing room between turns (layout has fixed chrome)
     const input = (await askMain(c.accent("❯ "))).trim();
     if (!input) continue;
+    // In layout mode readline echoed the input into the (now-cleared) composer, not
+    // the transcript — so replay it into the scroll region as the user's turn.
+    if (layoutOn) process.stdout.write("\n" + c.accent("❯ ") + input + "\n");
 
     // Treat as a slash command only if the first token is a single word — an
     // absolute file path ("/var/folders/…png", e.g. a pasted image) also starts
@@ -687,7 +800,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       }
       else if (cmd === "yolo") { autoApprove = true; process.stdout.write(c.yellow("  YOLO: auto-approving every action\n")); }
       else if (cmd === "safe") { autoApprove = false; process.stdout.write(c.dim("  SAFE: ask before write/edit/bash\n")); }
-      else if (cmd === "clear") { agent.reset(); tree.length = 0; leafId = null; process.stdout.write(c.dim("  history cleared\n")); }
+      else if (cmd === "clear") { agent.reset(); tree.length = 0; leafId = null; if (layoutOn) repaint(); else process.stdout.write(c.dim("  history cleared\n")); }
       else if (cmd === "tree") {
         if (!tree.length) { process.stdout.write(c.dim("  no history yet — chat first, then /tree to jump back or branch\n")); continue; }
         const id = await selectFromTree();
@@ -695,7 +808,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
           // Re-render the whole chat view from the rewound context so the screen
           // matches the active timeline (post-checkpoint turns vanish).
           renderTranscript();
-        } else process.stdout.write(c.dim("  (stayed here)\n"));
+        } else { process.stdout.write(c.dim("  (stayed here)\n")); drawChromeIdle(); /* the picker overwrote the chrome */ }
       }
       else process.stdout.write(c.dim("  suggestions:\n") + showCommandSuggestions(input));
       continue;
@@ -715,6 +828,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     recordTurn(input); // snapshot this turn into the conversation tree
     saveSession();     // persist the conversation after each turn
   }
+  cleanupLayout();
   process.stdout.write("\x1b[?2004l"); // disable bracketed paste
   rl.close();
   process.stdout.write(c.dim("bye 👋\n"));
