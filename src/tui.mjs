@@ -19,7 +19,7 @@ let modelList = [...MODELS];
 const COMMANDS = ["/help", "/tree", "/login", "/use", "/model", "/models", "/whoami", "/yolo", "/safe", "/clear", "/exit"];
 const COMMAND_DESC = {
   "/help": "show help",
-  "/tree": "jump back / branch the conversation (keeps context clean)",
+  "/tree": "browse the conversation timeline — jump back to any You/tawx point & branch",
   "/login": "login provider inside TUI",
   "/use": "switch provider/model and restart TUI",
   "/model": "switch model for this TUI session",
@@ -490,24 +490,65 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     } catch { /* never block the session on a save error */ }
   };
 
+  // Reprint the top banner (used at startup and when re-rendering after a rewind).
+  const printBanner = () => {
+    const home = os.homedir();
+    let proj = process.cwd();
+    if (proj === home) proj = "~"; else if (proj.startsWith(home + "/")) proj = "~" + proj.slice(home.length);
+    process.stdout.write(banner({ version: VERSION, cwd: proj, session: `session ${sessionId.slice(-4)}`, cols: process.stdout.columns || 80 }));
+  };
+
+  // Pull human-readable text out of a message's content (string OR multimodal array).
+  const textOf = (content) => {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) return content.map((p) => (p.type === "text" ? p.text : p.type === "image" ? "[image]" : "")).filter(Boolean).join(" ");
+    return "";
+  };
+
   // ---- Conversation tree (pi-style branching) ----
-  // Each completed turn becomes a node holding a full snapshot of the context at
-  // that point + parentId. Jumping to a node rewinds the live context to its
-  // snapshot (clean context); continuing from there forms a new branch, leaving
-  // the abandoned turns intact as siblings you can jump back to.
-  const tree = [];           // { id, parentId, snapshot, title, ts }
+  // Each TURN contributes two nodes so /tree shows both sides of the dialogue and
+  // you can rewind to either: a "user" node (context up to & incl. your prompt —
+  // rewinding here re-asks from your prompt) and a "tawx" node (full context after
+  // the reply). A node carries a snapshot of the live context at that point +
+  // parentId. Jumping rewinds the live context AND re-renders the chat view so the
+  // screen reflects the rewound timeline; the abandoned turns stay as sibling
+  // branches you can jump back to.
+  const tree = [];           // { id, parentId, role, snapshot, title, ts }
   let leafId = null;         // current position in the tree
   let nodeSeq = 0;
-  const recordTurn = (title) => {
-    const node = { id: (++nodeSeq).toString(36), parentId: leafId, snapshot: [...agent.messages], title: (title || "(turn)").replace(/\s+/g, " ").slice(0, 60), ts: Date.now() };
+  const addNode = (role, title, snapshot) => {
+    const node = { id: (++nodeSeq).toString(36), parentId: leafId, role, snapshot, title: (title || "").replace(/\s+/g, " ").trim().slice(0, 72) || (role === "user" ? "(empty)" : "(no text reply)"), ts: Date.now() };
     tree.push(node);
     leafId = node.id;
   };
+  const recordTurn = (userText) => {
+    const msgs = agent.messages;
+    // This turn's user message = the last user message in the live context.
+    let userIdx = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].role === "user") { userIdx = i; break; } }
+    if (userIdx === -1) return;
+    // user node: context up to & including the prompt (assistant reply excluded).
+    addNode("user", userText, msgs.slice(0, userIdx + 1));
+    // tawx node: full context after the reply. Title = last assistant text.
+    let lastAsst = null;
+    for (let i = msgs.length - 1; i > userIdx; i--) { if (msgs[i].role === "assistant") { lastAsst = msgs[i]; break; } }
+    addNode("assistant", textOf(lastAsst?.content), [...msgs]);
+  };
+  // Flatten the tree depth-first. A linear chain stays flat; we only indent at
+  // genuine branch points (a parent with >1 child) so single-path history reads
+  // as a simple list, and branches show ├─ / └─ connectors.
   const flattenTree = () => {
     const kids = new Map();
     for (const n of tree) { const k = n.parentId ?? "ROOT"; if (!kids.has(k)) kids.set(k, []); kids.get(k).push(n); }
     const rows = [];
-    const walk = (key, depth) => { for (const n of kids.get(key) || []) { rows.push({ id: n.id, label: n.title, depth }); walk(n.id, depth + 1); } };
+    const walk = (key, depth) => {
+      const arr = kids.get(key) || [];
+      const branch = arr.length > 1;
+      arr.forEach((n, i) => {
+        rows.push({ id: n.id, role: n.role, label: n.title, depth, branch, isLast: i === arr.length - 1 });
+        walk(n.id, depth + (branch ? 1 : 0));
+      });
+    };
     walk("ROOT", 0);
     return rows;
   };
@@ -518,6 +559,31 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     leafId = id;
     return true;
   };
+  // Re-render the chat view from the live (rewound) context: wipe the screen +
+  // scrollback so post-checkpoint turns disappear, reprint the banner, then replay
+  // user prompts and tawx replies up to the current checkpoint. Ends on a marker so
+  // it's clear you're standing at a branch point.
+  const renderTranscript = () => {
+    process.stdout.write("\x1b[3J\x1b[2J\x1b[H"); // clear screen + scrollback, home cursor
+    printBanner();
+    for (const m of agent.messages) {
+      if (m.role === "user") {
+        const t = textOf(m.content).trim();
+        if (t) process.stdout.write("\n" + c.accent("❯ ") + t + "\n");
+      } else if (m.role === "assistant") {
+        const t = textOf(m.content).trim();
+        if (t) {
+          const body = renderMarkdown(t).replace(/\n/g, "\n  ");
+          process.stdout.write("\n  " + c.soft("◆") + " " + c.bold(c.soft("tawx")) + "\n  " + body + "\n");
+        }
+        if (m.tool_calls?.length) {
+          const names = m.tool_calls.map((tc) => tc.function?.name).filter(Boolean).join(", ");
+          process.stdout.write("    " + c.faint("⋮ " + (names || "tools")) + "\n");
+        }
+      }
+    }
+    process.stdout.write("\n" + c.green("  ↪ Rewound here") + c.dim(" — keep typing to start a new branch · /tree to jump again") + "\n");
+  };
   // Modal picker over the tree — ↑/↓ move, Enter jump, Esc cancel. Returns node id or null.
   const selectFromTree = () => new Promise((resolve) => {
     const rows = flattenTree();
@@ -527,9 +593,11 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       process.stdout.write("\x1b7\n\x1b[J");
       const lines = rows.map((r, i) => {
         const marker = r.id === leafId ? c.ok("●") : c.faint("○");
-        const indent = "  ".repeat(r.depth);
+        const indent = "   ".repeat(r.depth);
+        const connector = r.depth > 0 && r.branch ? (r.isLast ? "└─ " : "├─ ") : "";
+        const tag = r.role === "user" ? c.accent("You ") : c.soft("tawx");
         const label = i === sel ? c.inverse(" " + r.label + " ") : (r.id === leafId ? r.label : c.dim(r.label));
-        return (i === sel ? c.accent("❯ ") : "  ") + indent + marker + " " + label;
+        return (i === sel ? c.accent("❯ ") : "  ") + indent + connector + marker + " " + tag + " " + label;
       });
       process.stdout.write(lines.join("\n"));
       process.stdout.write("\x1b8");
@@ -566,12 +634,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   });
 
   process.stdout.write("\x1b[?2004h"); // enable bracketed paste so multi-line pastes don't auto-submit
-  {
-    const home = os.homedir();
-    let proj = process.cwd();
-    if (proj === home) proj = "~"; else if (proj.startsWith(home + "/")) proj = "~" + proj.slice(home.length);
-    process.stdout.write(banner({ version: VERSION, cwd: proj, session: `session ${sessionId.slice(-4)}`, cols: process.stdout.columns || 80 }));
-  }
+  printBanner();
 
   // Show an update notice (bounded wait so it never lands mid-input and corrupts
   // the prompt line). Silent when up to date / offline.
@@ -629,8 +692,9 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         if (!tree.length) { process.stdout.write(c.dim("  no history yet — chat first, then /tree to jump back or branch\n")); continue; }
         const id = await selectFromTree();
         if (id && id !== leafId && rewindTo(id)) {
-          const t = tree.find((n) => n.id === id);
-          process.stdout.write(c.green("  ↩ jumped back") + c.dim(` — context rewound to: ${t?.title}\n  (keep chatting to start a new branch; /tree to go elsewhere)\n`));
+          // Re-render the whole chat view from the rewound context so the screen
+          // matches the active timeline (post-checkpoint turns vanish).
+          renderTranscript();
         } else process.stdout.write(c.dim("  (stayed here)\n"));
       }
       else process.stdout.write(c.dim("  suggestions:\n") + showCommandSuggestions(input));
