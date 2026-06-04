@@ -6,7 +6,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { createAgent } from "../src/agent.mjs";
 import { runTui } from "../src/tui.mjs";
-import { assertKey, MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, saveAuth, AUTH_PATH, VERSION, checkForUpdate, UPDATE_CMD, TAW_DIR } from "../src/config.mjs";
+import { assertKey, MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, saveAuth, AUTH_PATH, VERSION, checkForUpdate, UPDATE_CMD, TAW_DIR, SESSIONS_DIR, listSessions, loadSession } from "../src/config.mjs";
 import { c } from "../src/ui.mjs";
 import { loginCodexBrowser, loginCodexDeviceCode } from "../src/codex-oauth.mjs";
 
@@ -119,6 +119,8 @@ Usage:
   tawx whoami                  show active provider
   tawx models                  list models for the active provider
   tawx sessions                list saved conversations (~/.taw/sessions)
+  tawx resume [id]             reopen a saved conversation and keep chatting
+                               (id = full id or #NNNN tail; no id = newest)
   tawx --version               show version + check for updates
   tawx --help
 
@@ -172,26 +174,31 @@ async function main() {
     return;
   }
   if (cmd === "sessions") {
-    const dir = path.join(TAW_DIR, "sessions");
-    let files = [];
-    try { files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")); } catch { /* none */ }
-    if (!files.length) { process.stdout.write("No saved sessions yet.\n"); return; }
-    const rows = files.map((f) => {
-      try {
-        const s = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
-        const firstUser = (s.messages || []).find((m) => m.role === "user");
-        const text = typeof firstUser?.content === "string" ? firstUser.content : "(…)";
-        return { id: s.id || f.replace(/\.json$/, ""), updated: s.updated || "", model: s.model || "", n: (s.messages || []).length, snippet: text.replace(/\s+/g, " ").slice(0, 60) };
-      } catch { return null; }
-    }).filter(Boolean).sort((a, b) => (a.updated < b.updated ? 1 : -1));
+    const rows = listSessions();
+    if (!rows.length) { process.stdout.write("No saved sessions yet.\n"); return; }
     for (const r of rows) {
       process.stdout.write(`${c.bold(r.id)}  ${c.dim(r.updated.slice(0, 16).replace("T", " "))}  ${c.dim(r.model)}  ${c.dim(`${r.n} msgs`)}\n  ${c.dim(r.snippet)}\n`);
     }
-    process.stdout.write(c.dim(`\n${rows.length} sessions in ${dir}\n`));
+    process.stdout.write(c.dim(`\n${rows.length} sessions in ${SESSIONS_DIR}\n`));
+    process.stdout.write(c.dim(`resume:  tawx resume #${rows[0].id.slice(-4)}   (or: tawx resume — newest)\n`));
     return;
   }
 
   assertKey();
+
+  // resume a saved conversation into the TUI and keep chatting
+  if (cmd === "resume" || cmd === "continue") {
+    const arg = argv[1]?.startsWith("-") ? "" : argv[1];
+    const sess = loadSession(arg || "");
+    if (!sess) {
+      process.stdout.write(c.yellow(arg ? `No session matching "${arg}".\n` : "No saved sessions yet.\n"));
+      const rows = listSessions();
+      if (rows.length) process.stdout.write(c.dim("recent:\n") + rows.slice(0, 8).map((r) => `  ${r.id}  ${r.snippet}`).join("\n") + "\n");
+      return;
+    }
+    await runTui({ model: sess.model || model, resume: sess });
+    return;
+  }
 
   // headless run
   if (cmd === "run" || cmd === "-p") {

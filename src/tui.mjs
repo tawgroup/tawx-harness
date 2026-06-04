@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createAgent } from "./agent.mjs";
 import { c, banner, renderMarkdown, createMdStream } from "./ui.mjs";
-import { MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, AUTH_PATH, saveAuth, VERSION, checkForUpdate, UPDATE_CMD, contextWindowFor, TAW_DIR } from "./config.mjs";
+import { MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, AUTH_PATH, saveAuth, VERSION, checkForUpdate, UPDATE_CMD, contextWindowFor, TAW_DIR, listSessions, loadSession } from "./config.mjs";
 import { listModels } from "./provider.mjs";
 import { saveClipboardImage } from "./clipboard.mjs";
 import { loginCodexBrowser, loginCodexDeviceCode } from "./codex-oauth.mjs";
@@ -16,10 +16,11 @@ import { loginCodexBrowser, loginCodexDeviceCode } from "./codex-oauth.mjs";
 // available (see refreshModels in runTui). All model UI reads from here.
 let modelList = [...MODELS];
 
-const COMMANDS = ["/help", "/tree", "/login", "/use", "/model", "/models", "/whoami", "/yolo", "/safe", "/clear", "/exit"];
+const COMMANDS = ["/help", "/tree", "/resume", "/login", "/use", "/model", "/models", "/whoami", "/yolo", "/safe", "/clear", "/exit"];
 const COMMAND_DESC = {
   "/help": "show help",
   "/tree": "browse the conversation timeline — jump back to any You/tawx point & branch",
+  "/resume": "reopen a saved conversation and keep chatting",
   "/login": "login provider inside TUI",
   "/use": "switch provider/model and restart TUI",
   "/model": "switch model for this TUI session",
@@ -163,6 +164,7 @@ const HELP = `
 ${c.bold("Commands:")}
   /help            show help
   /tree            jump back to / branch from an earlier turn (clean context)
+  /resume          pick a saved conversation to reopen and continue
   /login [name]    login provider in TUI: opencode | codex | claude
   /use <name>      switch provider in TUI and restart
   /model <id>      switch model for this TUI session (e.g. /model qwen3.6-plus)
@@ -181,7 +183,7 @@ ${c.bold("Commands:")}
   Ctrl-C           interrupt the running turn (press again when idle to quit)
 `;
 
-export async function runTui({ model = DEFAULT_MODEL } = {}) {
+export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
   // historySize:0 hands ↑/↓ to us — we drive the suggestion dropdown with them
   // (and fall back to our own input history when no dropdown is showing).
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer: complete, historySize: 0 });
@@ -498,10 +500,12 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   // Session log: each run gets an id and is saved to ~/.taw/sessions/<id>.json so
   // you can review it later (see `tawx sessions`). Updated after every turn.
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "").replace(/-/g, "");
-  const sessionId = `${stamp}-${Math.floor(Math.random() * 1e4).toString().padStart(4, "0")}`;
+  // let, not const: /resume (and `tawx resume`) repoint these at the reopened
+  // session so continued turns append back to its original file.
+  let sessionId = `${stamp}-${Math.floor(Math.random() * 1e4).toString().padStart(4, "0")}`;
   const SESS_DIR = path.join(TAW_DIR, "sessions");
-  const sessionFile = path.join(SESS_DIR, `${sessionId}.json`);
-  const startedAt = new Date().toISOString();
+  let sessionFile = path.join(SESS_DIR, `${sessionId}.json`);
+  let startedAt = new Date().toISOString();
   // Drop heavy base64 image data when persisting (keep a marker so the log is readable + small).
   const sanitize = (msgs) => msgs.map((m) => {
     if (!Array.isArray(m.content)) return m;
@@ -648,6 +652,20 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
     leafId = id;
     return true;
   };
+  // Rebuild the conversation tree from a flat message list (used after resuming a
+  // saved session) so /tree shows the reopened history too. Mirrors recordTurn,
+  // one (user, tawx) pair per turn, cumulative snapshots.
+  const seedTreeFromMessages = () => {
+    tree.length = 0; leafId = null;
+    const msgs = agent.messages;
+    for (let i = 0; i < msgs.length; i++) {
+      if (msgs[i].role !== "user") continue;
+      addNode("user", textOf(msgs[i].content), msgs.slice(0, i + 1));
+      let j = i + 1, lastAsst = null;
+      while (j < msgs.length && msgs[j].role !== "user") { if (msgs[j].role === "assistant") lastAsst = msgs[j]; j++; }
+      if (lastAsst) addNode("assistant", textOf(lastAsst.content), msgs.slice(0, j));
+    }
+  };
   // Repaint the whole conversation from the live context. Clears the screen,
   // reprints the banner + transcript (which flows inside the scroll region in
   // layout mode), optionally ends on a "Rewound here" marker, and re-pins the
@@ -677,6 +695,58 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   };
   const renderTranscript = () => renderConversation(true);  // after a rewind
   const repaint = () => renderConversation(false);          // after a resize / clear
+
+  // Load a saved session into the live context and continue from it: swap in its
+  // messages, repoint the session file so new turns append back to it, rebuild
+  // the tree, and repaint. Returns false if the session has no usable messages.
+  const resumeInto = (sess) => {
+    const msgs = (sess?.messages || []).filter((m) => m.role !== "system");
+    if (!msgs.length) return false;
+    agent.setMessages(msgs);
+    if (sess.model) agent.setModel(sess.model);
+    if (sess.id) { sessionId = sess.id; sessionFile = path.join(SESS_DIR, `${sessionId}.json`); }
+    if (sess.started) startedAt = sess.started;
+    seedTreeFromMessages();
+    repaint();
+    return true;
+  };
+
+  // Modal picker over saved sessions — ↑/↓ move, Enter open, Esc cancel. Returns
+  // a session id or null. Renders in the transcript region like selectFromTree.
+  const selectFromSessions = () => new Promise((resolve) => {
+    const rows = listSessions();
+    if (!rows.length) { resolve(null); return; }
+    let sel = rows.findIndex((r) => r.id === sessionId);
+    if (sel < 0) sel = 0;
+    const render = () => {
+      process.stdout.write("\x1b7\n\x1b[J");
+      const lines = rows.slice(0, 12).map((r, i) => {
+        const when = (r.updated || "").slice(0, 16).replace("T", " ");
+        const head = `${r.id.slice(-4)}  ${when}  ${r.n} msgs`;
+        const body = `${head}  ${r.snippet}`;
+        const cur = r.id === sessionId ? c.ok("●") : c.faint("○");
+        const label = i === sel ? c.inverse(" " + body + " ") : c.dim(body);
+        return (i === sel ? c.accent("❯ ") : "  ") + cur + " " + label;
+      });
+      process.stdout.write(lines.join("\n"));
+      process.stdout.write("\x1b8");
+    };
+    const cleanup = () => { process.stdin.removeListener("keypress", onKey); rl.removeListener("line", onLine); process.stdout.write("\x1b[J"); };
+    const onKey = (_s, key) => {
+      if (!key) return;
+      const n = Math.min(rows.length, 12);
+      if (key.name === "up") { sel = (sel - 1 + n) % n; render(); }
+      else if (key.name === "down") { sel = (sel + 1) % n; render(); }
+      else if (key.name === "escape") { cleanup(); resolve(null); }
+    };
+    const onLine = () => { cleanup(); resolve(rows[sel]?.id ?? null); };
+    process.stdin.on("keypress", onKey);
+    rl.on("line", onLine);
+    rl.setPrompt(c.dim("  pick a conversation — ↑/↓ move · Enter open · Esc cancel "));
+    rl.prompt();
+    render();
+  });
+
   // Modal picker over the tree — ↑/↓ move, Enter jump, Esc cancel. Returns node id or null.
   const selectFromTree = () => new Promise((resolve) => {
     const rows = flattenTree();
@@ -716,6 +786,13 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   // Last-resort safety: always release the region on process exit.
   process.on("exit", () => { try { process.stdout.write("\x1b[r"); } catch { /* noop */ } });
 
+  // On the way out, print the one command that reopens this conversation — but
+  // only if we actually chatted (skip empty sessions).
+  const printResumeHint = () => {
+    if (!tree.length) return;
+    process.stdout.write(c.dim(`continue later:  tawx resume #${sessionId.slice(-4)}\n`));
+  };
+
   // Ctrl-C: cancel the in-flight turn (like Claude Code). Pressing it when idle exits.
   let aborter = null;
   rl.on("SIGINT", () => {
@@ -729,6 +806,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       process.stdout.write("\x1b[?2004l"); // disable bracketed paste
       rl.close();
       process.stdout.write(c.dim("\nbye 👋\n"));
+      printResumeHint();
       process.exit(0);
     }
   });
@@ -755,7 +833,13 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
       c.yellow(`  ⚑ update available: v${VERSION} → v${latest}\n`) + c.dim(`    ${UPDATE_CMD}\n\n`),
     );
   }
-  drawChromeIdle(); // pin the composer + footer to the bottom before the first prompt
+  // If launched via `tawx resume`, load that conversation now (repaints itself);
+  // otherwise just pin the composer + footer before the first prompt.
+  if (resume && resumeInto(resume)) {
+    process.stdout.write(c.dim(`  ↩ resumed #${sessionId.slice(-4)} — keep chatting, or /tree to jump back\n`));
+  } else {
+    drawChromeIdle();
+  }
 
   for (;;) {
     if (!layoutOn) process.stdout.write("\n"); // breathing room between turns (layout has fixed chrome)
@@ -812,6 +896,18 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
           renderTranscript();
         } else { process.stdout.write(c.dim("  (stayed here)\n")); drawChromeIdle(); /* the picker overwrote the chrome */ }
       }
+      else if (cmd === "resume") {
+        const sessions = listSessions();
+        if (!sessions.length) { process.stdout.write(c.dim("  no saved conversations yet\n")); continue; }
+        // /resume <id|#NNNN> loads directly; bare /resume opens the picker.
+        const arg = rest[0];
+        const id = arg ? (loadSession(arg)?.id ?? null) : await selectFromSessions();
+        if (!id) { process.stdout.write(c.dim(arg ? `  no session matching "${arg}"\n` : "  (cancelled)\n")); drawChromeIdle(); continue; }
+        if (id === sessionId) { process.stdout.write(c.dim("  (already on this conversation)\n")); drawChromeIdle(); continue; }
+        const sess = loadSession(id);
+        if (sess && resumeInto(sess)) process.stdout.write(c.green(`  ↩ resumed #${sessionId.slice(-4)}`) + c.dim(" — keep chatting, or /tree to jump back\n"));
+        else { process.stdout.write(c.red("  couldn't load that conversation\n")); drawChromeIdle(); }
+      }
       else process.stdout.write(c.dim("  suggestions:\n") + showCommandSuggestions(input));
       continue;
     }
@@ -834,4 +930,5 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
   process.stdout.write("\x1b[?2004l"); // disable bracketed paste
   rl.close();
   process.stdout.write(c.dim("bye 👋\n"));
+  printResumeHint();
 }

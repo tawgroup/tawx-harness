@@ -210,6 +210,53 @@ export const COMPACT_KEEP_TOKENS = Number(process.env.TAW_COMPACT_KEEP || 20000)
 export const COMPACT_ENABLED = process.env.TAW_COMPACT !== "0";
 export const TOOL_OUTPUT_CAP = Number(process.env.TAW_TOOL_CAP || 30000);
 
+// ---- Saved sessions (chat history at ~/.taw/sessions) -------------------
+export const SESSIONS_DIR = path.join(TAW_DIR, "sessions");
+
+const firstUserText = (messages = []) => {
+  const u = messages.find((m) => m.role === "user");
+  if (!u) return "";
+  if (typeof u.content === "string") return u.content;
+  if (Array.isArray(u.content)) return u.content.find((p) => p.type === "text")?.text || "";
+  return "";
+};
+
+// List saved sessions, most-recently-updated first. Light rows (no full message
+// bodies) for menus/listing; call loadSession() to read one in full.
+export function listSessions() {
+  let files = [];
+  try { files = fs.readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(".json")); } catch { return []; }
+  const rows = [];
+  for (const f of files) {
+    try {
+      const s = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, f), "utf8"));
+      rows.push({
+        id: s.id || f.replace(/\.json$/, ""),
+        file: path.join(SESSIONS_DIR, f),
+        updated: s.updated || s.started || "",
+        model: s.model || "",
+        provider: s.provider || "",
+        n: (s.messages || []).filter((m) => m.role !== "system").length,
+        snippet: firstUserText(s.messages).replace(/\s+/g, " ").slice(0, 60),
+      });
+    } catch { /* skip unreadable */ }
+  }
+  return rows.sort((a, b) => (a.updated < b.updated ? 1 : -1));
+}
+
+// Resolve a session by full id, by "#NNNN"/tail, or by substring; "" → newest.
+// Returns the parsed session object (incl. messages) or null.
+export function loadSession(idOrTail = "") {
+  const key = String(idOrTail).replace(/^#/, "").trim();
+  const rows = listSessions();
+  if (!rows.length) return null;
+  const row = !key
+    ? rows[0]
+    : rows.find((r) => r.id === key) || rows.find((r) => r.id.endsWith(key)) || rows.find((r) => r.id.includes(key));
+  if (!row) return null;
+  try { return JSON.parse(fs.readFileSync(row.file, "utf8")); } catch { return null; }
+}
+
 export function assertKey() {
   if (PROVIDER_CONFIG.type === "claude-cli") return;
   if (!API_KEY) {
