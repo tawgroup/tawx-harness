@@ -409,7 +409,7 @@ export async function runTui({ model = DEFAULT_MODEL } = {}) {
         case "thinking": {
           turnStart = Date.now();
           const fr = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]; let i = 0;
-          spin = setInterval(() => process.stdout.write("\r  " + c.accent(fr[i++ % fr.length]) + c.muted(` ${ev.model} đang nghĩ…`) + "  "), 80);
+          spin = setInterval(() => process.stdout.write("\r  " + c.accent(fr[i++ % fr.length]) + c.muted(` ${ev.model} thinking…`) + "  "), 80);
           break;
         }
         case "assistant_delta":
