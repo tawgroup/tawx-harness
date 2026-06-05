@@ -556,7 +556,11 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
   // stdout isn't a TTY or the terminal is too small to host the chrome.
   const CHROME_H = 4;
   const bigEnough = () => (process.stdout.rows || 0) >= 12 && (process.stdout.columns || 0) >= 40;
-  let layoutOn = !!process.stdout.isTTY && bigEnough();
+  // Inline REPL model (like pi): the prompt is just the last line of a normally
+  // scrolling transcript, NOT a composer docked in a fixed scroll region. Each
+  // submitted "❯ …" line stays in history with the reply right below it. The
+  // old fixed-viewport chrome stays guarded behind layoutOn (off) for reference.
+  let layoutOn = false;
   const ROWS = () => process.stdout.rows || 24;
   const COLS = () => process.stdout.columns || 80;
   const REGION_BOTTOM = () => Math.max(2, ROWS() - CHROME_H);
