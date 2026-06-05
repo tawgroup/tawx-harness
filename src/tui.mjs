@@ -830,15 +830,8 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
     }
   });
 
-  // Keep the layout correct across terminal resizes: re-set the scroll region for
-  // the new size and repaint header + transcript + chrome. Toggles the fixed
-  // layout off if the terminal shrinks below the usable threshold.
-  if (process.stdout.isTTY) process.stdout.on("resize", () => {
-    const was = layoutOn;
-    layoutOn = !!process.stdout.isTTY && bigEnough();
-    if (!layoutOn) { if (was) resetRegion(); return; }
-    repaint();
-  });
+  // Inline REPL needs no resize handling — the terminal reflows the transcript
+  // itself, and we must NOT clear+repaint (that would wipe the user's scrollback).
 
   process.stdout.write("\x1b[?2004h"); // enable bracketed paste so multi-line pastes don't auto-submit
   if (layoutOn) { process.stdout.write("\x1b[2J\x1b[3J" + at(1)); setRegion(); }
