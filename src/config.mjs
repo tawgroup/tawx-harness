@@ -44,8 +44,8 @@ export async function checkForUpdate(timeoutMs = 1500) {
   }
 }
 
-export const TAW_DIR = path.join(os.homedir(), ".tawx");
-export const AUTH_PATH = path.join(TAW_DIR, "auth.json");
+export const TAWX_DIR = path.join(os.homedir(), ".tawx");
+export const AUTH_PATH = path.join(TAWX_DIR, "auth.json");
 export const PI_AUTH_PATH = path.join(os.homedir(), ".pi", "agent", "auth.json");
 
 // ---- minimal .env loader (zero-dep) ----
@@ -65,7 +65,7 @@ function loadDotenv(dir) {
   }
 }
 loadDotenv(process.cwd());
-loadDotenv(TAW_DIR);
+loadDotenv(TAWX_DIR);
 
 function readJson(p) {
   try {
@@ -89,7 +89,7 @@ function readAuth() {
 }
 
 export function saveAuth(auth) {
-  fs.mkdirSync(TAW_DIR, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(TAWX_DIR, { recursive: true, mode: 0o700 });
   fs.writeFileSync(AUTH_PATH, JSON.stringify(auth, null, 2) + "\n", { mode: 0o600 });
   try { fs.chmodSync(AUTH_PATH, 0o600); } catch { /* ignore */ }
 }
@@ -130,15 +130,15 @@ export const PROVIDERS = {
   },
 };
 
-export const PROVIDER = process.env.TAW_PROVIDER || AUTH.active || "opencode";
+export const PROVIDER = process.env.TAWX_PROVIDER || AUTH.active || "opencode";
 export const PROVIDER_CONFIG = PROVIDERS[PROVIDER] || PROVIDERS.opencode;
 export const SAVED_PROVIDER = AUTH.providers?.[PROVIDER] || {};
 
 export const BASE_URL =
-  process.env.TAW_BASE_URL || SAVED_PROVIDER.baseUrl || PROVIDER_CONFIG.baseUrl;
+  process.env.TAWX_BASE_URL || SAVED_PROVIDER.baseUrl || PROVIDER_CONFIG.baseUrl;
 
 export const API_KEY =
-  process.env.TAW_API_KEY ||
+  process.env.TAWX_API_KEY ||
   (PROVIDER_CONFIG.keyEnv ? process.env[PROVIDER_CONFIG.keyEnv] : "") ||
   SAVED_PROVIDER.apiKey ||
   SAVED_PROVIDER.oauth?.access ||
@@ -146,13 +146,13 @@ export const API_KEY =
   (PROVIDER === "opencode" ? process.env.OPENCODE_API_KEY : "") ||
   "";
 
-export const DEFAULT_MODEL = SAVED_PROVIDER.model || process.env.TAW_MODEL || PROVIDER_CONFIG.defaultModel;
+export const DEFAULT_MODEL = SAVED_PROVIDER.model || process.env.TAWX_MODEL || PROVIDER_CONFIG.defaultModel;
 export const MODELS = PROVIDER_CONFIG.models;
 export const GO_MODELS = PROVIDERS.opencode.models; // backwards-compatible export
 
-export const MAX_STEPS = Number(process.env.TAW_MAX_STEPS || 40);
-export const MAX_TOKENS = Number(process.env.TAW_MAX_TOKENS || 8192);
-export const REQUEST_TIMEOUT_MS = Number(process.env.TAW_REQUEST_TIMEOUT || 180000);
+export const MAX_STEPS = Number(process.env.TAWX_MAX_STEPS || 40);
+export const MAX_TOKENS = Number(process.env.TAWX_MAX_TOKENS || 8192);
+export const REQUEST_TIMEOUT_MS = Number(process.env.TAWX_REQUEST_TIMEOUT || 180000);
 
 // ---- Context window per model (tokens) — drives auto-compaction + footer % ----
 // pi-style: compact when used > window - reserve, keeping the last keepTokens.
@@ -167,7 +167,7 @@ const CONTEXT_WINDOWS = [
   [/glm|kimi|qwen|deepseek|minimax|mimo|hy3/i, 200000], // opencode models
 ];
 
-export const CONTEXT_WINDOWS_PATH = path.join(TAW_DIR, "context-windows.json");
+export const CONTEXT_WINDOWS_PATH = path.join(TAWX_DIR, "context-windows.json");
 
 // Load user overrides from ~/.tawx/context-windows.json. Shape is a flat object
 // { "<regex source>": <tokens> } — keys are matched (case-insensitive) against
@@ -178,10 +178,10 @@ function loadContextOverrides() {
   try {
     if (!fs.existsSync(CONTEXT_WINDOWS_PATH)) {
       const seed = {
-        _comment: "Override/add model→context-window (tokens). Key = regex matched (case-insensitive) against the model id; first match wins and these are checked BEFORE the built-in defaults. Edit freely — no code change needed. Env TAW_CONTEXT_WINDOW overrides everything.",
+        _comment: "Override/add model→context-window (tokens). Key = regex matched (case-insensitive) against the model id; first match wins and these are checked BEFORE the built-in defaults. Edit freely — no code change needed. Env TAWX_CONTEXT_WINDOW overrides everything.",
         "gpt-5.5": 272000,
       };
-      fs.mkdirSync(TAW_DIR, { recursive: true, mode: 0o700 });
+      fs.mkdirSync(TAWX_DIR, { recursive: true, mode: 0o700 });
       fs.writeFileSync(CONTEXT_WINDOWS_PATH, JSON.stringify(seed, null, 2) + "\n", { mode: 0o600 });
     }
     const obj = readJson(CONTEXT_WINDOWS_PATH);
@@ -200,18 +200,18 @@ function loadContextOverrides() {
 const CONTEXT_OVERRIDES = loadContextOverrides();
 
 export function contextWindowFor(model = "") {
-  if (process.env.TAW_CONTEXT_WINDOW) return Number(process.env.TAW_CONTEXT_WINDOW);
+  if (process.env.TAWX_CONTEXT_WINDOW) return Number(process.env.TAWX_CONTEXT_WINDOW);
   for (const [re, n] of CONTEXT_OVERRIDES) if (re.test(model)) return n; // user file first
   for (const [re, n] of CONTEXT_WINDOWS) if (re.test(model)) return n;   // then built-ins
   return 128000; // safe default
 }
-export const COMPACT_RESERVE = Number(process.env.TAW_COMPACT_RESERVE || 16384); // headroom kept free
-export const COMPACT_KEEP_TOKENS = Number(process.env.TAW_COMPACT_KEEP || 20000); // recent tail kept verbatim
-export const COMPACT_ENABLED = process.env.TAW_COMPACT !== "0";
-export const TOOL_OUTPUT_CAP = Number(process.env.TAW_TOOL_CAP || 30000);
+export const COMPACT_RESERVE = Number(process.env.TAWX_COMPACT_RESERVE || 16384); // headroom kept free
+export const COMPACT_KEEP_TOKENS = Number(process.env.TAWX_COMPACT_KEEP || 20000); // recent tail kept verbatim
+export const COMPACT_ENABLED = process.env.TAWX_COMPACT !== "0";
+export const TOOL_OUTPUT_CAP = Number(process.env.TAWX_TOOL_CAP || 30000);
 
 // ---- Saved sessions (chat history at ~/.tawx/sessions) -------------------
-export const SESSIONS_DIR = path.join(TAW_DIR, "sessions");
+export const SESSIONS_DIR = path.join(TAWX_DIR, "sessions");
 
 const firstUserText = (messages = []) => {
   const u = messages.find((m) => m.role === "user");
@@ -264,7 +264,7 @@ export function assertKey() {
       `No auth for provider "${PROVIDER}". Run: tawx login ${PROVIDER}\n` +
         (PROVIDER === "codex"
           ? "Codex uses ChatGPT Plus/Pro OAuth subscription login (not an OpenAI API key)."
-          : `Or set ${PROVIDER_CONFIG.keyEnv}=... / TAW_API_KEY=... in env or .env.`),
+          : `Or set ${PROVIDER_CONFIG.keyEnv}=... / TAWX_API_KEY=... in env or .env.`),
     );
   }
 }

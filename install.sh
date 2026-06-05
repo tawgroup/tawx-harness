@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO="https://github.com/tawgroup/tawx-harness.git"
-DIR="${TAW_HOME:-$HOME/.tawx-harness}"
+DIR="${TAWX_HOME:-$HOME/.tawx-harness}"
 
 echo "▟▙ tawx installer"
 
@@ -55,7 +55,7 @@ fi
 
 # 4. Config dir. Model + provider are stored per-provider in ~/.taw/auth.json
 # (set via `tawx login` / `/model` in the TUI), so we DON'T pin a model in .env —
-# a hard-coded TAW_MODEL would override the saved choice and break other providers.
+# a hard-coded TAWX_MODEL would override the saved choice and break other providers.
 mkdir -p "$HOME/.taw" && chmod 700 "$HOME/.taw"
 
 echo ""

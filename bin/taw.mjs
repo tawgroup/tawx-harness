@@ -6,7 +6,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { createAgent } from "../src/agent.mjs";
 import { runTui } from "../src/tui.mjs";
-import { assertKey, MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, saveAuth, AUTH_PATH, VERSION, checkForUpdate, UPDATE_CMD, TAW_DIR, SESSIONS_DIR, listSessions, loadSession } from "../src/config.mjs";
+import { assertKey, MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, saveAuth, AUTH_PATH, VERSION, checkForUpdate, UPDATE_CMD, TAWX_DIR, SESSIONS_DIR, listSessions, loadSession } from "../src/config.mjs";
 import { c } from "../src/ui.mjs";
 import { loginCodexBrowser, loginCodexDeviceCode } from "../src/codex-oauth.mjs";
 
@@ -136,11 +136,11 @@ Options:
   --method <browser|device>    (codex login) OAuth method
 
 Env:
-  TAW_PROVIDER=<opencode|codex|claude>
-  TAW_API_KEY=<key>                override saved provider key
-  TAW_MODEL=<model>                override saved/default model
-  TAW_BASE_URL=<url>               override provider endpoint
-  TAW_REQUEST_TIMEOUT=<ms>         per-request timeout (default 180000)
+  TAWX_PROVIDER=<opencode|codex|claude>
+  TAWX_API_KEY=<key>                override saved provider key
+  TAWX_MODEL=<model>                override saved/default model
+  TAWX_BASE_URL=<url>               override provider endpoint
+  TAWX_REQUEST_TIMEOUT=<ms>         per-request timeout (default 180000)
 `;
 
 async function main() {

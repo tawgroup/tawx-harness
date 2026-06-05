@@ -81,7 +81,7 @@ function toOpenAi(messages) {
 }
 
 async function chatOpenAi({ messages, tools, model, maxTokens, signal, onToken }) {
-  const stream = typeof onToken === "function" && !process.env.TAW_NO_STREAM;
+  const stream = typeof onToken === "function" && !process.env.TAWX_NO_STREAM;
   const body = { model, messages: toOpenAi(messages), max_tokens: maxTokens };
   if (tools && tools.length) {
     body.tools = tools;
@@ -330,7 +330,7 @@ async function codexToken() {
     next.providers[PROVIDER] = { ...(next.providers[PROVIDER] || {}), oauth };
     saveAuth(next);
   }
-  const access = process.env.TAW_API_KEY || process.env.OPENAI_CODEX_ACCESS_TOKEN || oauth?.access || API_KEY;
+  const access = process.env.TAWX_API_KEY || process.env.OPENAI_CODEX_ACCESS_TOKEN || oauth?.access || API_KEY;
   if (!access) throw new Error("No Codex OAuth token. Run: tawx login codex");
   return { access, accountId: oauth?.accountId || codexAccountId(access) };
 }

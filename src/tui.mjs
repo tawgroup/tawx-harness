@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { createAgent } from "./agent.mjs";
 import { c, banner, renderMarkdown, createMdStream, bgLine, BG, visLen } from "./ui.mjs";
-import { MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, AUTH_PATH, saveAuth, VERSION, checkForUpdate, UPDATE_CMD, contextWindowFor, TAW_DIR, listSessions, loadSession } from "./config.mjs";
+import { MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, AUTH_PATH, saveAuth, VERSION, checkForUpdate, UPDATE_CMD, contextWindowFor, TAWX_DIR, listSessions, loadSession } from "./config.mjs";
 import { listModels } from "./provider.mjs";
 import { saveClipboardImage } from "./clipboard.mjs";
 import { loginCodexBrowser, loginCodexDeviceCode } from "./codex-oauth.mjs";
@@ -513,7 +513,7 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
   // let, not const: /resume (and `tawx resume`) repoint these at the reopened
   // session so continued turns append back to its original file.
   let sessionId = `${stamp}-${Math.floor(Math.random() * 1e4).toString().padStart(4, "0")}`;
-  const SESS_DIR = path.join(TAW_DIR, "sessions");
+  const SESS_DIR = path.join(TAWX_DIR, "sessions");
   let sessionFile = path.join(SESS_DIR, `${sessionId}.json`);
   let startedAt = new Date().toISOString();
   // Drop heavy base64 image data when persisting (keep a marker so the log is readable + small).

@@ -21,5 +21,5 @@ This repo is a small PI-inspired, zero-dependency coding-agent harness. Keep it 
 ## Model notes (verified 2026-05-29)
 - Default `glm-5`: RELIABLE for the agent loop — multi-turn tool use completes (write→read→summary OK).
 - `kimi-k2.5`: fast + non-reasoning, generates output directly. BUT **breaks on multi-turn**: works for 1-2 tool calls then the next returns "Provider returned error". Only use for one-shot gen (low max-steps). Not a good default.
-- glm-5 / deepseek-v4-pro / minimax-m2.5: reasoning-heavy → burn lots of `reasoning_tokens`, set a higher `TAW_MAX_TOKENS` for large files.
-- Go throughput varies 17–47 tok/s; there is a request-timeout (`TAW_REQUEST_TIMEOUT`). Stuffing >15k chars into one tool-call `arguments` can trigger provider errors → prefer splitting large files across steps.
+- glm-5 / deepseek-v4-pro / minimax-m2.5: reasoning-heavy → burn lots of `reasoning_tokens`, set a higher `TAWX_MAX_TOKENS` for large files.
+- Go throughput varies 17–47 tok/s; there is a request-timeout (`TAWX_REQUEST_TIMEOUT`). Stuffing >15k chars into one tool-call `arguments` can trigger provider errors → prefer splitting large files across steps.
