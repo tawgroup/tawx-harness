@@ -30,7 +30,7 @@ fi
 
 # 3. Make the `tawx` command available
 chmod +x "$DIR/bin/taw.mjs"
-echo "→ Installing the 'tawx' command"
+echo "→ Installing the 'tawx' and 'tx' commands"
 if ( cd "$DIR" && npm install -g . >/dev/null 2>&1 ); then
   echo "  installed globally via npm"
 else
@@ -38,7 +38,8 @@ else
   BIN="$HOME/.local/bin"
   mkdir -p "$BIN"
   ln -sf "$DIR/bin/taw.mjs" "$BIN/tawx"
-  echo "  npm -g not permitted → linked $BIN/tawx"
+  ln -sf "$DIR/bin/taw.mjs" "$BIN/tx"
+  echo "  npm -g not permitted → linked $BIN/tawx and $BIN/tx"
   case ":$PATH:" in
     *":$BIN:"*) ;;
     *)
@@ -54,10 +55,10 @@ else
 fi
 
 # 4. Config dir. Model + provider are stored per-provider in ~/.taw/auth.json
-# (set via `tawx login` / `/model` in the TUI), so we DON'T pin a model in .env —
+# (set via `tawx login` or `tx login` / `/model` in the TUI), so we DON'T pin a model in .env —
 # a hard-coded TAWX_MODEL would override the saved choice and break other providers.
 mkdir -p "$HOME/.taw" && chmod 700 "$HOME/.taw"
 
 echo ""
-echo "✓ Done. Try:  tawx --help    (or just: tawx)"
+echo "✓ Done. Try:  tawx --help    (or just: tawx / tx)"
 echo "  Get a key: https://opencode.ai → workspace → API Keys"

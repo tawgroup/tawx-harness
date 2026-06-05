@@ -4,7 +4,8 @@
   "description": "Tiny PI-inspired coding agent harness with just simple tools and configurable OpenAI-compatible provider support. Zero dependencies, runs on Node 20+ or Bun.",
   "type": "module",
   "bin": {
-    "tawx": "bin/taw.mjs"
+    "tawx": "bin/taw.mjs",
+    "tx": "bin/taw.mjs"
   },
   "scripts": {
     "start": "node bin/taw.mjs",

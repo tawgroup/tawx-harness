@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/tawgroup/tawx-harness/main/install.
 ## Setup
 
 ```bash
-tawx login      # pick provider: opencode / codex / claude
+tawx login      # or: tx login — pick provider: opencode / codex / claude
 ```
 
 ## Use
@@ -19,7 +19,7 @@ tawx login      # pick provider: opencode / codex / claude
 Open the interactive TUI:
 
 ```bash
-tawx
+tawx            # or: tx
 ```
 
 Useful TUI commands:
@@ -34,7 +34,7 @@ Useful TUI commands:
 Ctrl-C        interrupt
 ```
 
-Other helpers: `tawx models` · `tawx whoami`
+Other helpers: `tawx models` / `tx models` · `tawx whoami` / `tx whoami`
 
 ## Tools
 
