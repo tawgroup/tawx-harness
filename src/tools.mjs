@@ -178,6 +178,23 @@ function applyParsedToText(text, hunks, label) {
   return lines.join("\n") + (hadTrailing ? "\n" : "");
 }
 
+// Reduce an HTML document to readable text: drop scripts/styles/comments, turn
+// block-level closers and <br>/<li> into line breaks, strip the rest of the
+// tags, decode common entities, and collapse whitespace. Keeps web_fetch output
+// token-cheap (raw markup is ~90% noise for an LLM).
+function htmlToText(html) {
+  let s = String(html);
+  s = s.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<!--[\s\S]*?-->/g, " ");
+  s = s.replace(/<li[^>]*>/gi, "\n- ");
+  s = s.replace(/<br\s*\/?>/gi, "\n");
+  s = s.replace(/<\/(p|div|tr|h[1-6]|section|article|header|footer|ul|ol|pre|blockquote|table|head|title)>/gi, "\n");
+  s = s.replace(/<[^>]+>/g, " ");
+  const ent = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&apos;": "'", "&nbsp;": " " };
+  s = s.replace(/&(amp|lt|gt|quot|#39|apos|nbsp);/g, (m) => ent[m]).replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+  s = s.replace(/[ \t]+/g, " ").replace(/\n[ \t]+/g, "\n").replace(/\n{3,}/g, "\n\n");
+  return s.trim();
+}
+
 export const TOOLS = {
   read_file: {
     schema: {
@@ -483,6 +500,48 @@ export const TOOLS = {
       }
       fs.unlinkSync(full);
       return `OK: reverted ${snap.touched.length} file(s)`;
+    },
+  },
+
+  web_fetch: {
+    schema: {
+      type: "function",
+      function: {
+        name: "web_fetch",
+        description:
+          "Fetch an http(s) URL and return it as clean readable text (HTML stripped to prose, length-capped). Use to read external docs, API references, GitHub issues/PRs or release notes when the answer isn't in the repo. Prefer local docs, `<cmd> --help`, and grep FIRST; reach for the web only when you need an external source and know (or can guess) the URL.",
+        parameters: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "http:// or https:// URL" },
+            timeout_ms: { type: "number", description: "request timeout, default 20000" },
+          },
+          required: ["url"],
+        },
+      },
+    },
+    needsApproval: true,
+    preview: (a) => a.url,
+    async run(a, _ctx) {
+      const url = String(a.url || "").trim();
+      if (!/^https?:\/\//i.test(url)) return "ERROR: url must start with http:// or https://";
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), a.timeout_ms || 20000);
+      try {
+        const res = await fetch(url, {
+          redirect: "follow",
+          signal: ctrl.signal,
+          headers: { "user-agent": "tawx-harness (+https://github.com/tawgroup/tawx-harness)", accept: "text/html,text/plain,*/*" },
+        });
+        const ctype = (res.headers.get("content-type") || "").split(";")[0].trim();
+        const raw = await res.text();
+        const body = /html/i.test(ctype) ? htmlToText(raw) : raw;
+        return cap(`# ${url}\n[${res.status}${ctype ? " " + ctype : ""}]\n\n${body || "(empty body)"}`);
+      } catch (e) {
+        return `ERROR: fetch failed: ${e.name === "AbortError" ? `timeout after ${a.timeout_ms || 20000}ms` : e.message}`;
+      } finally {
+        clearTimeout(timer);
+      }
     },
   },
 

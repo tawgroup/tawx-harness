@@ -68,6 +68,11 @@ assert.ok(md.includes("• a") && md.includes("  • b"), "nested bullets indent
 assert.ok(/─{5,}/.test(md), "--- becomes a horizontal rule");
 ok("renderMarkdown (pi-style)");
 
+// web_fetch: the offline url guard (no network needed).
+const wf = await TOOLS.web_fetch.run({ url: "ftp://nope" }, ctx);
+assert.ok(wf.startsWith("ERROR") && wf.includes("http"), "web_fetch rejects non-http urls");
+ok("web_fetch (url guard)");
+
 const ls = await TOOLS.list_dir.run({ path: "." }, ctx);
 assert.ok(ls.includes("a.txt"));
 ok("list_dir");
