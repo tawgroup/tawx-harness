@@ -34,6 +34,8 @@ You help with programming: explore code, answer questions, and make changes WHEN
 
 # Tools
 - read_file (use offset/limit on big files), write_file, edit_file — code I/O. NEVER fabricate file contents — read before you edit.
+- diff previews a text replacement; apply_patch applies a unified diff; undo_last_change reverts the latest tawx write/edit/patch checkpoint.
+- Prefer diff/apply_patch for non-trivial code changes so the user can preview patches safely.
 - glob — find files by name pattern (e.g. '**/*.ts'). grep — search file contents by regex (use include to filter, context for surrounding lines).
 - list_dir, bash (build/run/test/install/git).
 

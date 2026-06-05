@@ -1,6 +1,7 @@
 // Tool registry — the model's hands. Each tool: {schema, run(args, ctx)}.
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { execFile } from "node:child_process";
 import { TOOL_OUTPUT_CAP } from "./config.mjs";
 
@@ -69,6 +70,114 @@ function sh(command, cwd, timeout = 120000) {
   });
 }
 
+const UNDO_DIR = path.join(os.homedir(), ".taw", "undo");
+
+function remember(ctx, files) {
+  const touched = [];
+  for (const p of files) {
+    const f = resolve(ctx, p);
+    const exists = fs.existsSync(f);
+    touched.push({ path: p, exists, content: exists && fs.statSync(f).isFile() ? fs.readFileSync(f, "utf8") : null });
+  }
+  fs.mkdirSync(UNDO_DIR, { recursive: true, mode: 0o700 });
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  fs.writeFileSync(path.join(UNDO_DIR, `${id}.json`), JSON.stringify({ cwd: ctx.cwd, touched }, null, 2) + "\n", { mode: 0o600 });
+  return id;
+}
+
+function latestUndo() {
+  try {
+    return fs.readdirSync(UNDO_DIR).filter((f) => f.endsWith(".json")).sort().at(-1);
+  } catch { return null; }
+}
+
+function fileDiff(file, before, after) {
+  const a = String(before ?? "").split("\n"), b = String(after ?? "").split("\n");
+  const out = [`--- a/${file}`, `+++ b/${file}`];
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    if (a[i] === b[i]) continue;
+    if (a[i] !== undefined) out.push(`-${a[i]}`);
+    if (b[i] !== undefined) out.push(`+${b[i]}`);
+  }
+  return out.join("\n");
+}
+
+// Parse a unified diff into [{ path, hunks: [{ lines: [{op, text}] }] }].
+// Tolerant of: a//b/ prefixes or none, /dev/null, stray "diff --git" lines,
+// and "\ No newline at end of file" markers (which cheap models rarely emit).
+function parsePatch(patch) {
+  const files = [];
+  let cur = null, hunk = null;
+  const lines = String(patch).split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop(); // drop trailing-newline artifact
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let m;
+    if (line.startsWith("diff --git")) { cur = null; hunk = null; continue; }
+    if ((m = line.match(/^--- (.+?)\s*$/))) {
+      const next = lines[i + 1] || "";
+      const t = next.match(/^\+\+\+ (.+?)\s*$/);
+      const strip = (s) => s.replace(/^[ab]\//, "");
+      const target = t && t[1] !== "/dev/null" ? strip(t[1]) : strip(m[1]);
+      cur = { path: target, hunks: [] };
+      files.push(cur);
+      if (t) i++;            // consume the matching +++ line
+      hunk = null;
+      continue;
+    }
+    if (line.startsWith("+++ ")) continue;             // stray header
+    if (line.startsWith("@@")) {
+      if (!cur) { cur = { path: null, hunks: [] }; files.push(cur); }
+      hunk = { lines: [] };
+      cur.hunks.push(hunk);
+      continue;
+    }
+    if (line === "\\ No newline at end of file") continue;
+    if (!hunk) continue;
+    const op = line[0];
+    if (op === " " || op === "+" || op === "-") hunk.lines.push({ op, text: line.slice(1) });
+    else if (line === "") hunk.lines.push({ op: " ", text: "" }); // blank context line
+  }
+  return files.filter((f) => f.hunks.length);
+}
+
+// Locate `needle` (the hunk's old lines) in `haystack`, getting progressively
+// more forgiving: exact → ignore trailing whitespace → ignore all indentation.
+// Returns the start index, or -1 if no normalization level matches.
+function findBlock(haystack, needle, start) {
+  if (needle.length === 0) return Math.min(start, haystack.length);
+  const norms = [(s) => s, (s) => s.replace(/\s+$/, ""), (s) => s.trim()];
+  for (const norm of norms) {
+    const N = needle.map(norm);
+    for (let i = start; i + N.length <= haystack.length; i++) {
+      let ok = true;
+      for (let j = 0; j < N.length; j++) if (norm(haystack[i + j]) !== N[j]) { ok = false; break; }
+      if (ok) return i;
+    }
+  }
+  return -1;
+}
+
+// Apply parsed hunks to file text in pure JS — no git apply, so it survives
+// wrong @@ line numbers and missing no-newline markers. Preserves the file's
+// original trailing-newline style.
+function applyParsedToText(text, hunks, label) {
+  const hadTrailing = text === "" ? true : text.endsWith("\n"); // new files get a trailing newline, like git
+  const lines = text.length ? text.replace(/\n$/, "").split("\n") : [];
+  let cursor = 0;
+  for (const h of hunks) {
+    const oldLines = h.lines.filter((l) => l.op === " " || l.op === "-").map((l) => l.text);
+    const newLines = h.lines.filter((l) => l.op === " " || l.op === "+").map((l) => l.text);
+    let at = findBlock(lines, oldLines, cursor);
+    if (at < 0) at = findBlock(lines, oldLines, 0); // hunks may be out of order
+    if (at < 0) throw new Error(`hunk did not match in ${label}:\n${oldLines.join("\n")}`);
+    lines.splice(at, oldLines.length, ...newLines);
+    cursor = at + newLines.length;
+  }
+  return lines.join("\n") + (hadTrailing ? "\n" : "");
+}
+
 export const TOOLS = {
   read_file: {
     schema: {
@@ -131,9 +240,10 @@ export const TOOLS = {
     preview: (a) => `${a.path} (${a.content.length} bytes)`,
     async run(a, ctx) {
       const f = resolve(ctx, a.path);
+      const id = remember(ctx, [a.path]);
       fs.mkdirSync(path.dirname(f), { recursive: true });
       fs.writeFileSync(f, a.content);
-      return `OK: wrote ${a.path} (${a.content.length} bytes)`;
+      return `OK: wrote ${a.path} (${a.content.length} bytes, undo: ${id})`;
     },
   },
 
@@ -169,8 +279,9 @@ export const TOOLS = {
       const next = a.replace_all
         ? data.split(a.old_string).join(a.new_string)
         : data.replace(a.old_string, a.new_string);
+      const id = remember(ctx, [a.path]);
       fs.writeFileSync(f, next);
-      return `OK: edited ${a.path} (${a.replace_all ? count : 1} place${a.replace_all && count > 1 ? "s" : ""})`;
+      return `OK: edited ${a.path} (${a.replace_all ? count : 1} place${a.replace_all && count > 1 ? "s" : ""}, undo: ${id})`;
     },
   },
 
@@ -278,6 +389,102 @@ export const TOOLS = {
     },
   },
 
+
+  diff: {
+    schema: {
+      type: "function",
+      function: {
+        name: "diff",
+        description: "Preview a simple text replacement as a unified diff without changing files.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            old_string: { type: "string" },
+            new_string: { type: "string" },
+            replace_all: { type: "boolean" },
+          },
+          required: ["path", "old_string", "new_string"],
+        },
+      },
+    },
+    needsApproval: false,
+    preview: (a) => a.path,
+    async run(a, ctx) {
+      const f = resolve(ctx, a.path);
+      if (!fs.existsSync(f)) return `ERROR: not found ${a.path}`;
+      const before = fs.readFileSync(f, "utf8");
+      const count = before.split(a.old_string).length - 1;
+      if (count === 0) return `ERROR: old_string not found in ${a.path}`;
+      if (count > 1 && !a.replace_all) return `ERROR: old_string matches ${count} places. Add replace_all=true or use a longer string.`;
+      const after = a.replace_all ? before.split(a.old_string).join(a.new_string) : before.replace(a.old_string, a.new_string);
+      return cap(fileDiff(a.path, before, after));
+    },
+  },
+
+  apply_patch: {
+    schema: {
+      type: "function",
+      function: {
+        name: "apply_patch",
+        description: "Apply a unified diff patch. Saves an undo checkpoint first; use undo_last_change to revert.",
+        parameters: {
+          type: "object",
+          properties: {
+            patch: { type: "string", description: "unified diff, usually with --- a/file and +++ b/file headers" },
+          },
+          required: ["patch"],
+        },
+      },
+    },
+    needsApproval: true,
+    preview: (a) => String(a.patch).split("\n").slice(0, 12).join("\n"),
+    async run(a, ctx) {
+      const files = parsePatch(a.patch);
+      if (!files.length) return "ERROR: no file hunks found in patch";
+      const plan = [];
+      for (const file of files) {
+        if (!file.path) return "ERROR: patch hunk has no file path (missing --- / +++ header)";
+        const f = resolve(ctx, file.path);
+        const before = fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
+        try { plan.push({ path: file.path, f, after: applyParsedToText(before, file.hunks, file.path) }); }
+        catch (e) { return `ERROR: ${e.message}`; }
+      }
+      const id = remember(ctx, plan.map((p) => p.path));
+      for (const p of plan) {
+        fs.mkdirSync(path.dirname(p.f), { recursive: true });
+        fs.writeFileSync(p.f, p.after);
+      }
+      return `OK: applied patch to ${plan.map((p) => p.path).join(", ")} (undo: ${id})`;
+    },
+  },
+
+  undo_last_change: {
+    schema: {
+      type: "function",
+      function: {
+        name: "undo_last_change",
+        description: "Undo the most recent write_file/edit_file/apply_patch change saved by tawx.",
+        parameters: { type: "object", properties: {} },
+      },
+    },
+    needsApproval: true,
+    preview: () => "restore last tawx checkpoint",
+    async run(_a, ctx) {
+      const file = latestUndo();
+      if (!file) return "ERROR: no undo checkpoint found";
+      const full = path.join(UNDO_DIR, file);
+      const snap = JSON.parse(fs.readFileSync(full, "utf8"));
+      if (snap.cwd !== ctx.cwd) return `ERROR: latest undo belongs to ${snap.cwd}, current cwd is ${ctx.cwd}`;
+      for (const t of snap.touched.reverse()) {
+        const f = resolve(ctx, t.path);
+        if (t.exists) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, t.content ?? ""); }
+        else if (fs.existsSync(f)) fs.rmSync(f, { recursive: true, force: true });
+      }
+      fs.unlinkSync(full);
+      return `OK: reverted ${snap.touched.length} file(s)`;
+    },
+  },
 
   bash: {
     schema: {

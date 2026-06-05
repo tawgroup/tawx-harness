@@ -28,6 +28,6 @@ TUI: `/model <id>` · `/models` · `/yolo` · `/safe` · `/clear` · `/exit` · 
 
 ## Tools
 
-`read_file` · `write_file` · `edit_file` · `glob` · `grep` · `list_dir` · `bash`
+`read_file` · `write_file` · `edit_file` · `diff` · `apply_patch` · `undo_last_change` · `glob` · `grep` · `list_dir` · `bash`
 
 MIT · [tawgroup](https://github.com/tawgroup)

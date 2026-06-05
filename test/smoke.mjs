@@ -27,6 +27,36 @@ await TOOLS.edit_file.run({ path: "a.txt", old_string: "world", new_string: "taw
 assert.ok(fs.readFileSync(path.join(tmp, "a.txt"), "utf8").includes("taw"));
 ok("edit_file");
 
+const d = await TOOLS.diff.run({ path: "a.txt", old_string: "taw", new_string: "TAW" }, ctx);
+assert.ok(d.includes("--- a/a.txt") && d.includes("+TAW"), "diff previews replacement");
+ok("diff preview");
+
+const patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n hello\n-taw\n+TAW\n";
+const ap = await TOOLS.apply_patch.run({ patch }, ctx);
+assert.ok(ap.includes("OK: applied patch"), "apply_patch should apply unified diff");
+assert.ok(fs.readFileSync(path.join(tmp, "a.txt"), "utf8").includes("TAW"));
+ok("apply_patch");
+
+const un = await TOOLS.undo_last_change.run({}, ctx);
+assert.ok(un.includes("OK: reverted"), "undo should restore last patch checkpoint");
+assert.ok(fs.readFileSync(path.join(tmp, "a.txt"), "utf8").includes("taw"));
+ok("undo_last_change");
+
+// Lenient apply: bogus @@ line numbers must still apply by matching content.
+await TOOLS.write_file.run({ path: "x.js", content: "line1\nline2\nline3\n" }, ctx);
+const wrong = await TOOLS.apply_patch.run(
+  { patch: "--- a/x.js\n+++ b/x.js\n@@ -999,3 +999,3 @@\n line1\n-line2\n+LINE2\n line3\n" }, ctx);
+assert.ok(wrong.startsWith("OK"), "apply_patch ignores wrong @@ numbers");
+assert.equal(fs.readFileSync(path.join(tmp, "x.js"), "utf8"), "line1\nLINE2\nline3\n");
+ok("apply_patch (wrong line numbers)");
+
+// New file via /dev/null, ending with a trailing newline like git.
+const created = await TOOLS.apply_patch.run(
+  { patch: "--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+brand\n+new\n" }, ctx);
+assert.ok(created.startsWith("OK"), "apply_patch creates new files");
+assert.equal(fs.readFileSync(path.join(tmp, "new.txt"), "utf8"), "brand\nnew\n");
+ok("apply_patch (new file)");
+
 const ls = await TOOLS.list_dir.run({ path: "." }, ctx);
 assert.ok(ls.includes("a.txt"));
 ok("list_dir");
