@@ -383,7 +383,7 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
     const home = os.homedir();
     let dir = process.cwd();
     if (dir === home) dir = "~"; else if (dir.startsWith(home + "/")) dir = "~" + dir.slice(home.length);
-    const sid = `#${sessionId.slice(-4)}`; // conversation id (matches the header + the ~/.taw/sessions filename tail)
+    const sid = `#${sessionId.slice(-4)}`; // conversation id (matches the header + the ~/.tawx/sessions filename tail)
     const segs = [
       { plain: dir, col: c.accent(dir) },
       { plain: sid, col: c.muted(sid) },
@@ -507,7 +507,7 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
   });
   agent.setModel(model);
 
-  // Session log: each run gets an id and is saved to ~/.taw/sessions/<id>.json so
+  // Session log: each run gets an id and is saved to ~/.tawx/sessions/<id>.json so
   // you can review it later (see `tawx sessions`). Updated after every turn.
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "").replace(/-/g, "");
   // let, not const: /resume (and `tawx resume`) repoint these at the reopened

@@ -5,7 +5,7 @@ import path from "node:path";
 
 // Auto-load project instructions the way Claude Code reads CLAUDE.md: first match wins.
 // This is what makes the agent "know" the repo's conventions without being told each turn.
-const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md", ".taw/context.md", ".cursorrules"];
+const CONTEXT_FILES = ["AGENTS.md", "CLAUDE.md", ".tawx/context.md", ".cursorrules"];
 export function loadProjectContext(cwd) {
   for (const name of CONTEXT_FILES) {
     const f = path.join(cwd, name);

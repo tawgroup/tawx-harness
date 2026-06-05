@@ -44,7 +44,7 @@ export async function checkForUpdate(timeoutMs = 1500) {
   }
 }
 
-export const TAW_DIR = path.join(os.homedir(), ".taw");
+export const TAW_DIR = path.join(os.homedir(), ".tawx");
 export const AUTH_PATH = path.join(TAW_DIR, "auth.json");
 export const PI_AUTH_PATH = path.join(os.homedir(), ".pi", "agent", "auth.json");
 
@@ -158,7 +158,7 @@ export const REQUEST_TIMEOUT_MS = Number(process.env.TAW_REQUEST_TIMEOUT || 1800
 // pi-style: compact when used > window - reserve, keeping the last keepTokens.
 // These are the built-in DEFAULTS. Providers' /models endpoints don't expose a
 // context-length field, so there's nothing to fetch live — instead the numbers
-// live in an editable JSON at ~/.taw/context-windows.json that overrides (and is
+// live in an editable JSON at ~/.tawx/context-windows.json that overrides (and is
 // checked before) these built-ins. Edit that file to tweak a window; no code
 // change / release needed.
 const CONTEXT_WINDOWS = [
@@ -169,7 +169,7 @@ const CONTEXT_WINDOWS = [
 
 export const CONTEXT_WINDOWS_PATH = path.join(TAW_DIR, "context-windows.json");
 
-// Load user overrides from ~/.taw/context-windows.json. Shape is a flat object
+// Load user overrides from ~/.tawx/context-windows.json. Shape is a flat object
 // { "<regex source>": <tokens> } — keys are matched (case-insensitive) against
 // the model id in insertion order, BEFORE the built-ins, so the first match wins.
 // Keys starting with "_" (e.g. "_comment") are ignored. Seeds an editable example
@@ -210,7 +210,7 @@ export const COMPACT_KEEP_TOKENS = Number(process.env.TAW_COMPACT_KEEP || 20000)
 export const COMPACT_ENABLED = process.env.TAW_COMPACT !== "0";
 export const TOOL_OUTPUT_CAP = Number(process.env.TAW_TOOL_CAP || 30000);
 
-// ---- Saved sessions (chat history at ~/.taw/sessions) -------------------
+// ---- Saved sessions (chat history at ~/.tawx/sessions) -------------------
 export const SESSIONS_DIR = path.join(TAW_DIR, "sessions");
 
 const firstUserText = (messages = []) => {

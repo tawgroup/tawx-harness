@@ -70,7 +70,7 @@ function sh(command, cwd, timeout = 120000) {
   });
 }
 
-const UNDO_DIR = path.join(os.homedir(), ".taw", "undo");
+const UNDO_DIR = path.join(os.homedir(), ".tawx", "undo");
 
 function remember(ctx, files) {
   const touched = [];

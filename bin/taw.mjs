@@ -118,7 +118,7 @@ Usage:
   tawx use <provider>          switch active provider/model without changing key
   tawx whoami                  show active provider
   tawx models                  list models for the active provider
-  tawx sessions                list saved conversations (~/.taw/sessions)
+  tawx sessions                list saved conversations (~/.tawx/sessions)
   tawx resume [id]             reopen a saved conversation and keep chatting
                                (id = full id or #NNNN tail; no id = newest)
   tawx --version               show version + check for updates
