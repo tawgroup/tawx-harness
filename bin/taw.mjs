@@ -150,6 +150,87 @@ Env:
   TAWX_REQUEST_TIMEOUT=<ms>         per-request timeout (default 180000)
 `;
 
+// ---- taw-case / pi-protocol headless mode ---------------------------------
+// Lets taw-case (or any pi-compatible orchestrator) spawn tawx as a drop-in
+// for `pi`: same flags in, newline-delimited JSON events out. One auto-approved,
+// tool-scoped agent run, then a SINGLE message_end carrying the answer/verdict.
+
+// Map taw-case's generic role tools → concrete tawx tool names. update_plan is
+// always allowed (in-memory checklist, harmless). An unknown token passes
+// through as-is, so a config may also name tawx tools directly.
+const CASE_TOOL_MAP = {
+  read: ["read_file", "diff"],
+  bash: ["bash"],
+  edit: ["edit_file", "multi_edit", "apply_patch", "undo_last_change"],
+  write: ["write_file"],
+  grep: ["grep"],
+  find: ["glob"],
+  ls: ["list_dir"],
+  fetch: ["web_fetch"],
+};
+function mapCaseTools(csv) {
+  if (!csv) return null; // no --tools → all tools available
+  const allow = new Set(["update_plan"]);
+  for (const raw of csv.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const mapped = CASE_TOOL_MAP[raw];
+    if (mapped) mapped.forEach((t) => allow.add(t));
+    else allow.add(raw);
+  }
+  return [...allow];
+}
+
+// Walk argv: value-flags consume the next token, bare-flags stand alone, and
+// whatever is left is the prompt (taw-case passes it as the final positional).
+function parseCaseArgs() {
+  const VALUE = new Set(["--model", "--mode", "--tools", "--max-steps", "--cwd",
+    "--append-system-prompt", "--provider", "--skill", "--task-file"]);
+  const flags = {};
+  const prompt = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (VALUE.has(a)) { flags[a] = argv[++i]; continue; }
+    if (a.startsWith("-")) continue; // bare/unknown flag → ignore (don't pollute prompt)
+    prompt.push(a);
+  }
+  return { flags, prompt: prompt.join(" ").trim() };
+}
+
+async function runCase() {
+  const { flags, prompt } = parseCaseArgs();
+  const task = flags["--task-file"]
+    ? fs.readFileSync(flags["--task-file"], "utf8").trim()
+    : prompt;
+  if (!task) { process.stderr.write("tawx case: missing task.\n"); process.exit(2); }
+
+  const sys = flags["--append-system-prompt"] || "";
+  const fullPrompt = sys ? `${sys}\n\n${task}` : task;
+  const caseModel = flags["--model"] || model;
+  const cwd = flags["--cwd"] || process.cwd();
+  const maxSteps = Number(flags["--max-steps"] || 0) || undefined;
+  const allowTools = mapCaseTools(flags["--tools"]);
+
+  const emit = (ev) => process.stdout.write(JSON.stringify(ev) + "\n");
+  let reachedLimit = false;
+  const agent = createAgent({
+    model: caseModel, cwd, maxSteps, tools: allowTools, approve: async () => true,
+    onEvent(ev) {
+      // stream tool starts so the orchestrator shows live progress
+      if (ev.type === "tool_start")
+        emit({ type: "tool_execution_start", toolName: ev.name, args: { info: String(ev.preview ?? "") } });
+      else if (ev.type === "max_steps") reachedLimit = true;
+    },
+  });
+
+  try {
+    const text = await agent.send(fullPrompt);
+    emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: String(text ?? "") }] } });
+  } catch (e) {
+    process.stderr.write(`tawx case error: ${e?.message || e}\n`);
+    process.exit(1);
+  }
+  process.exit(reachedLimit ? 1 : 0);
+}
+
 async function main() {
   const cmd = argv[0];
 
@@ -192,6 +273,10 @@ async function main() {
   }
 
   assertKey();
+
+  // taw-case / pi-protocol headless mode: an orchestrator drives tawx as a
+  // drop-in for `pi`. Triggered by `--mode json`. See runCase() below.
+  if (getFlag("--mode", "") === "json") { await runCase(); return; }
 
   // resume a saved conversation into the TUI and keep chatting
   if (cmd === "resume" || cmd === "continue") {

@@ -1,7 +1,7 @@
 // The agent loop: model <-> tools until the task is done.
 import fs from "node:fs";
 import { chat } from "./provider.mjs";
-import { TOOLS, toolSchemas, renderPlan } from "./tools.mjs";
+import { TOOLS, renderPlan } from "./tools.mjs";
 import { systemPrompt } from "./prompt.mjs";
 import { maybeCompact } from "./compact.mjs";
 import { DEFAULT_MODEL, MAX_STEPS } from "./config.mjs";
@@ -58,8 +58,13 @@ export function createAgent(opts = {}) {
   const maxSteps = opts.maxSteps || MAX_STEPS;
   const stream = opts.stream || false;
 
-  const registry = { ...TOOLS };
-  const tools = toolSchemas();
+  // Optional tool allowlist (case / CI mode): restrict the model's hands so a
+  // scoped role like "reviewer" physically CANNOT edit. null/empty = all tools.
+  const allow = opts.tools?.length ? new Set(opts.tools) : null;
+  const registry = allow
+    ? Object.fromEntries(Object.entries(TOOLS).filter(([k]) => allow.has(k)))
+    : { ...TOOLS };
+  const tools = Object.values(registry).map((t) => t.schema);
   // ctx.plan is the source of truth for the checklist. The update_plan tool writes
   // here; the loop re-pins a fresh copy at the end of context each turn (below).
   const ctx = { cwd, onEvent, plan: [] };
