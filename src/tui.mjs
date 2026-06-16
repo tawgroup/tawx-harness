@@ -279,6 +279,7 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
       let pastePrefix = "";  // text already in the buffer when the paste started
       const pasteStore = new Map(); // id -> full pasted text (kept out of the visible line)
       let pasteSeq = 0;
+      let suggestShown = false; // whether a suggestion block is currently painted below the input
 
       // Render the suggestion + footer chrome on every keystroke.
       //  - LAYOUT mode: the composer is pinned to a fixed bottom row. readline has
@@ -300,7 +301,14 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
         // copies in the scrollback once the prompt sat at the bottom row and the
         // \n scrolled the screen. The status now lives only in the header.
         if (!items.length) {
-          process.stdout.write("\x1b7\n\x1b[J\x1b8"); // clear any leftover suggestion block
+          // Only emit the clear dance if a suggestion block is actually showing.
+          // Doing it on every keystroke pushed a stray \n through terminals that
+          // mishandle DECSC/DECRC (\x1b7/\x1b8) when the prompt sits at the bottom
+          // row — the \n scrolls and the restore lands wrong → staircased input.
+          if (suggestShown) {
+            process.stdout.write("\x1b7\n\x1b[J\x1b8"); // clear leftover suggestion block
+            suggestShown = false;
+          }
           return;
         }
         process.stdout.write("\x1b7");      // save cursor (at the input position)
@@ -309,6 +317,7 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
           i === sel ? c.accent("❯ ") + c.inverse(" " + it.label + " ") : "  " + it.label);
         process.stdout.write(out.join("\n"));
         process.stdout.write("\x1b8");      // restore cursor back to the input
+        suggestShown = true;
       };
 
       let pending = false;
