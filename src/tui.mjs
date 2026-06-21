@@ -8,7 +8,7 @@ import { createAgent } from "./agent.mjs";
 import { walkFiles } from "./tools.mjs";
 import { c, banner, renderMarkdown, createMdStream, bgLine, BG, visLen } from "./ui.mjs";
 import { MODELS, DEFAULT_MODEL, PROVIDER, PROVIDERS, AUTH, AUTH_PATH, saveAuth, VERSION, checkForUpdate, UPDATE_CMD, contextWindowFor, TAWX_DIR, listSessions, loadSession } from "./config.mjs";
-import { listModels } from "./provider.mjs";
+import { listModels, chat } from "./provider.mjs";
 import { saveClipboardImage } from "./clipboard.mjs";
 import { loginCodexBrowser, loginCodexDeviceCode } from "./codex-oauth.mjs";
 
@@ -19,7 +19,7 @@ let modelList = [...MODELS];
 
 // Visible / autocompleted commands. /models, /whoami, /use still work as hidden
 // aliases (handled in the dispatcher) so muscle memory doesn't break.
-const COMMANDS = ["/help", "/new", "/session", "/model", "/provider", "/login", "/tree", "/resume", "/yolo", "/safe", "/clear", "/exit"];
+const COMMANDS = ["/help", "/new", "/session", "/model", "/provider", "/login", "/tree", "/resume", "/goal", "/yolo", "/safe", "/clear", "/exit"];
 const COMMAND_DESC = {
   "/help": "show help",
   "/new": "start a fresh conversation (keeps the current one saved)",
@@ -29,6 +29,7 @@ const COMMAND_DESC = {
   "/login": "add or re-authenticate a provider",
   "/tree": "browse the conversation timeline — jump back & branch",
   "/resume": "reopen a saved conversation and keep chatting",
+  "/goal": "set a standing goal — tawx keeps working until it's met (/goal clear to stop)",
   "/yolo": "auto-approve write/edit/bash",
   "/safe": "ask before write/edit/bash",
   "/clear": "clear conversation history",
@@ -222,6 +223,7 @@ ${c.muted("Available commands:")}
   ${c.bold("/login")}     ${c.faint("Add or re-authenticate a provider")}
   ${c.bold("/tree")}      ${c.faint("Jump back to / branch an earlier turn")}
   ${c.bold("/resume")}    ${c.faint("Reopen a saved conversation")}
+  ${c.bold("/goal")}      ${c.faint("Set a standing goal — keep working until it's met (/goal clear to stop)")}
   ${c.bold("/yolo")}      ${c.faint("Auto-approve every action (default)")}
   ${c.bold("/safe")}      ${c.faint("Ask before write / edit / bash")}
   ${c.bold("/clear")}     ${c.faint("Clear conversation history")}
@@ -454,6 +456,9 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
   let lastTokens = 0;       // total_tokens of the last turn ≈ current context size
   let lastSecs = 0;         // last response time
   let totalCost = 0;        // cumulative cost this session
+  // Per-API-call usage ledger, persisted to the session file so external tools
+  // (e.g. TawTerminal's usage footer) can total today's tokens/cost by date.
+  let sessionUsage = [];    // [{ ts, input, output, tokens, cost, model }]
 
   // PI-style status footer drawn right under the input (see draw() in askMain).
   const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n));
@@ -587,6 +592,16 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
             lastTokens = ev.usage.total_tokens;
             lastSecs = turnStart ? (Date.now() - turnStart) / 1000 : 0;
             if (ev.cost != null) totalCost += Number(ev.cost) || 0;
+            // One ledger row per model call — tokens are per-call (prompt+completion),
+            // so summing rows = total tokens billed today, matching how ccusage sums.
+            sessionUsage.push({
+              ts: new Date().toISOString(),
+              input: ev.usage.prompt_tokens || 0,
+              output: ev.usage.completion_tokens || 0,
+              tokens: ev.usage.total_tokens || 0,
+              cost: ev.cost != null ? Number(ev.cost) || 0 : 0,
+              model: agent.model,
+            });
             // metadata lives in the sticky footer — refresh it around the live cursor.
             if (layoutOn) { process.stdout.write("\x1b7"); drawFooter(); process.stdout.write("\x1b8"); }
           }
@@ -644,6 +659,8 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
       fs.writeFileSync(sessionFile, JSON.stringify({
         id: sessionId, started: startedAt, updated: new Date().toISOString(),
         model: agent.model, provider: PROVIDER, cwd: process.cwd(),
+        goal: activeGoal || undefined,
+        usage: sessionUsage,
         messages: sanitize(agent.messages),
       }, null, 2));
     } catch { /* never block the session on a save error */ }
@@ -842,6 +859,8 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
     if (sess.model) agent.setModel(sess.model);
     if (sess.id) { sessionId = sess.id; sessionFile = path.join(SESS_DIR, `${sessionId}.json`); }
     if (sess.started) startedAt = sess.started;
+    activeGoal = sess.goal || null;
+    sessionUsage = Array.isArray(sess.usage) ? sess.usage : [];
     seedTreeFromMessages();
     repaint();
     return true;
@@ -969,6 +988,39 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
     process.stdout.write(c.dim(`continue later:  tawx resume #${sessionId.slice(-4)}\n`));
   };
 
+  // ---- Standing goal (Claude Code / Codex "goal" feature) -----------------
+  // When set, tawx won't consider a turn finished until a lightweight judge
+  // confirms the goal is satisfied — otherwise it re-prompts itself and keeps
+  // working. Cleared with `/goal clear`, or auto-cleared once the judge says met.
+  let activeGoal = null;
+  const GOAL_MAX_ITERS = Number(process.env.TAWX_GOAL_MAX_ITERS || 25);
+
+  // Ask the model (no tools) whether the standing goal is now satisfied, judging
+  // from the recent conversation. Returns { met:boolean, reason:string }.
+  // Fail-open to met=true on any error so a flaky judge never traps the user.
+  const judgeGoal = async (goal, signal) => {
+    const recent = agent.messages
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .slice(-8)
+      .map((m) => `${m.role.toUpperCase()}: ${textOf(m.content).slice(0, 1500)}`)
+      .join("\n\n");
+    const judgeMessages = [
+      { role: "system", content: "You are a strict completion judge. Given a GOAL and a transcript of an agent's recent work, decide if the goal is FULLY satisfied. Reply with ONLY a JSON object: {\"met\": true|false, \"reason\": \"<one short sentence>\"}. Be strict: if any part is unfinished, unverified, or merely promised, answer met=false." },
+      { role: "user", content: `GOAL:\n${goal}\n\nRECENT WORK:\n${recent || "(nothing yet)"}\n\nIs the GOAL fully satisfied? Reply with the JSON object only.` },
+    ];
+    try {
+      const { message } = await chat({ messages: judgeMessages, tools: [], model: agent.model, cwd: process.cwd(), signal });
+      const raw = textOf(message?.content) || "";
+      const m = raw.match(/\{[\s\S]*\}/);
+      const verdict = m ? JSON.parse(m[0]) : null;
+      if (verdict && typeof verdict.met === "boolean") return { met: verdict.met, reason: String(verdict.reason || "").slice(0, 200) };
+      // Couldn't parse — treat a clear "met"/"yes" in the text as done, else keep going.
+      return { met: /\b(met|yes|satisfied|complete|done)\b/i.test(raw) && !/\bnot\b/i.test(raw), reason: raw.slice(0, 120) };
+    } catch {
+      return { met: true, reason: "judge unavailable — releasing the goal" };
+    }
+  };
+
   // Ctrl-C: cancel the in-flight turn (like Claude Code). Pressing it when idle exits.
   let aborter = null;
   rl.on("SIGINT", () => {
@@ -1039,7 +1091,7 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
         saveSession();
         agent.reset();
         tree.length = 0; leafId = null;
-        lastTokens = 0; lastSecs = 0; totalCost = 0;
+        lastTokens = 0; lastSecs = 0; totalCost = 0; sessionUsage = [];
         const nstamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "").replace(/-/g, "");
         sessionId = `${nstamp}-${Math.floor(Math.random() * 1e4).toString().padStart(4, "0")}`;
         sessionFile = path.join(SESS_DIR, `${sessionId}.json`);
@@ -1119,23 +1171,75 @@ export async function runTui({ model = DEFAULT_MODEL, resume = null } = {}) {
         if (sess && resumeInto(sess)) process.stdout.write(c.green(`  ↩ resumed #${sessionId.slice(-4)}`) + c.dim(" — keep chatting, or /tree to jump back\n"));
         else { process.stdout.write(c.red("  couldn't load that conversation\n")); drawChromeIdle(); }
       }
+      else if (cmd === "goal") {
+        const arg = rest.join(" ").trim();
+        if (!arg) {
+          // bare /goal — show the current goal (or how to set one).
+          if (activeGoal) process.stdout.write(c.accent("  ◎ active goal: ") + activeGoal + c.dim("\n  (/goal clear to stop)\n"));
+          else process.stdout.write(c.dim("  no active goal — set one with /goal <what you want done>\n"));
+        } else if (/^(clear|off|none|stop|done)$/i.test(arg)) {
+          if (activeGoal) { process.stdout.write(c.dim(`  ◎ goal cleared: ${activeGoal}\n`)); activeGoal = null; }
+          else process.stdout.write(c.dim("  no active goal to clear\n"));
+        } else {
+          activeGoal = arg;
+          process.stdout.write(c.accent("  ◎ goal set: ") + activeGoal + c.dim("\n  tawx will keep working until it's met — starting now. (/goal clear to stop)\n"));
+          // Kick off immediately: queue the goal as a turn so the next loop
+          // iteration runs it and the goal-loop takes over — no need to send
+          // another message first.
+          busyInputQueue.push(activeGoal);
+        }
+      }
       else process.stdout.write(c.dim("  suggestions:\n") + showCommandSuggestions(input));
       continue;
     }
 
-    try {
-      aborter = new AbortController();
-      captureBusyInput = true;
-      await agent.send(input, { signal: aborter.signal });
-    } catch (e) {
-      stopSpin();
-      if (mdStream) { mdStream.end(); mdStream = null; }
-      if (aborter?.signal.aborted) process.stdout.write(c.yellow("  ⎋ stopped\n"));
-      else process.stdout.write(c.red(`  ✗ ${e.message}\n`));
-    } finally {
-      captureBusyInput = false;
-      aborter = null;
+    // Run one model turn with the shared interrupt + error handling.
+    // Returns true if it completed normally (not aborted, not errored).
+    const runTurn = async (text) => {
+      let ok = true;
+      try {
+        aborter = new AbortController();
+        captureBusyInput = true;
+        await agent.send(text, { signal: aborter.signal });
+      } catch (e) {
+        ok = false;
+        stopSpin();
+        if (mdStream) { mdStream.end(); mdStream = null; }
+        if (aborter?.signal.aborted) process.stdout.write(c.yellow("  ⎋ stopped\n"));
+        else process.stdout.write(c.red(`  ✗ ${e.message}\n`));
+      } finally {
+        captureBusyInput = false;
+        aborter = null;
+      }
+      return ok;
+    };
+
+    let ok = await runTurn(input);
+
+    // ---- Goal loop: don't stop until the standing goal is judged satisfied. ----
+    // After the turn settles, if a goal is active and the turn wasn't interrupted,
+    // ask the judge whether it's met. If not, feed the verdict back and let tawx
+    // keep working — up to GOAL_MAX_ITERS as a safety cap.
+    if (ok && activeGoal) {
+      for (let it = 0; it < GOAL_MAX_ITERS && activeGoal; it++) {
+        process.stdout.write(c.dim("  ◎ checking goal…\n"));
+        const verdict = await judgeGoal(activeGoal, undefined);
+        if (verdict.met) {
+          process.stdout.write(c.green(`  ✓ goal met`) + c.dim(verdict.reason ? ` — ${verdict.reason}` : "") + "\n");
+          activeGoal = null;
+          break;
+        }
+        process.stdout.write(c.yellow(`  ↻ goal not met yet`) + c.dim(verdict.reason ? ` — ${verdict.reason}` : "") + c.dim(" · continuing (Ctrl-C to interrupt)\n"));
+        const cont =
+          `[STANDING GOAL — not yet satisfied]\nYour goal is: "${activeGoal}".\n` +
+          (verdict.reason ? `A reviewer says it's not done because: ${verdict.reason}\n` : "") +
+          `Keep working toward it NOW with real tool actions. Do not stop or ask permission — finish the goal. If it is genuinely already complete, briefly confirm what proves it's done.`;
+        ok = await runTurn(cont);
+        if (!ok) break; // interrupted or errored — leave the goal set, let the user decide
+      }
+      if (ok && activeGoal) process.stdout.write(c.yellow(`  ⚠ goal still open after ${GOAL_MAX_ITERS} rounds — paused. Refine it or /goal clear.\n`));
     }
+
     recordTurn(input); // snapshot this turn into the conversation tree
     saveSession();     // persist the conversation after each turn
   }

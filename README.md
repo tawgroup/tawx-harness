@@ -31,6 +31,7 @@ Useful TUI commands:
 /provider     switch provider (restarts tawx)
 /login        add or re-authenticate a provider
 /session      show provider, model, tokens & cost
+/goal         set a standing goal — tawx keeps working until it's met (/goal clear to stop)
 /yolo         auto-approve tool use
 /safe         ask before risky tools
 /clear        clear conversation
